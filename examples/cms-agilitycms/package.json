@@ -6,7 +6,7 @@
     "start": "next start"
   },
   "dependencies": {
-    "@agility/content-fetch": "^0.8.1",
+    "@agility/content-fetch": "^1.0.1",
     "classnames": "2.3.1",
     "date-fns": "2.22.1",
     "isomorphic-unfetch": "3.0.0",
