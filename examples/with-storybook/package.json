@@ -14,10 +14,10 @@
     "react-dom": "^17.0.2"
   },
   "devDependencies": {
-    "@storybook/addon-essentials": "6.0.26",
+    "@storybook/addon-essentials": "6.1.20",
     "@storybook/addon-links": "6.0.26",
-    "@storybook/react": "6.0.26",
+    "@storybook/react": "6.1.20",
     "babel-loader": "^8.0.5",
-    "serve": "11.3.2"
+    "serve": "12.0.0"
   }
 }
