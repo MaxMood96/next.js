@@ -6,7 +6,7 @@
     "start": "next start"
   },
   "dependencies": {
-    "@stripe/react-stripe-js": "1.7.0",
+    "@stripe/react-stripe-js": "1.10.0",
     "@stripe/stripe-js": "1.22.0",
     "micro": "^9.3.4",
     "micro-cors": "^0.1.1",
