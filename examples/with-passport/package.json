@@ -9,7 +9,7 @@
     "@hapi/iron": "6.0.0",
     "cookie": "0.4.1",
     "next": "latest",
-    "next-connect": "0.8.1",
+    "next-connect": "0.13.0",
     "passport": "0.4.1",
     "passport-local": "1.0.0",
     "react": "^17.0.2",
