@@ -4,7 +4,9 @@ import type { ParsedUrlQuery } from 'querystring'
 import type { UrlWithParsedQuery } from 'url'
 import type { BaseNextRequest } from './base-http'
 import type { CloneableBody } from './body-streams'
-import { RouteMatch } from './future/route-matches/route-match'
+import type { RouteMatch } from './route-matches/route-match'
+import type { NEXT_RSC_UNION_QUERY } from '../client/components/app-router-headers'
+import type { ServerComponentsHmrCache } from './response-cache'
 
 // FIXME: (wyattjoh) this is a temporary solution to allow us to pass data between bundled modules
 export const NEXT_REQUEST_META = Symbol.for('NextInternalRequestMeta')
@@ -14,33 +16,140 @@ export type NextIncomingMessage = (BaseNextRequest | IncomingMessage) & {
 }
 
 export interface RequestMeta {
-  __NEXT_INIT_QUERY?: ParsedUrlQuery
-  __NEXT_INIT_URL?: string
-  __NEXT_CLONABLE_BODY?: CloneableBody
-  __nextHadTrailingSlash?: boolean
+  /**
+   * The query that was used to make the request.
+   */
+  initQuery?: ParsedUrlQuery
+
+  /**
+   * The URL that was used to make the request.
+   */
+  initURL?: string
+
+  /**
+   * The protocol that was used to make the request.
+   */
+  initProtocol?: string
+
+  /**
+   * The body that was read from the request. This is used to allow the body to
+   * be read multiple times.
+   */
+  clonableBody?: CloneableBody
 
   /**
    * True when the request matched a locale domain that was configured in the
    * next.config.js file.
    */
-  __nextIsLocaleDomain?: boolean
+  isLocaleDomain?: boolean
 
   /**
    * True when the request had locale information stripped from the pathname
    * part of the URL.
    */
-  __nextStrippedLocale?: boolean
-  _nextDidRewrite?: boolean
-  _nextHadBasePath?: boolean
-  _nextRewroteUrl?: string
-  _nextMiddlewareCookie?: string[]
-  _protocol?: string
-  _nextDataNormalizing?: boolean
-  _nextMatch?: RouteMatch
-  _nextIncrementalCache?: any
-  _nextMinimalMode?: boolean
+  didStripLocale?: boolean
+
+  /**
+   * If the request had it's URL rewritten, this is the URL it was rewritten to.
+   */
+  rewroteURL?: string
+
+  /**
+   * The cookies that were added by middleware and were added to the response.
+   */
+  middlewareCookie?: string[]
+
+  /**
+   * The match on the request for a given route.
+   */
+  match?: RouteMatch
+
+  /**
+   * The incremental cache to use for the request.
+   */
+  incrementalCache?: any
+
+  /**
+   * The server components HMR cache, only for dev.
+   */
+  serverComponentsHmrCache?: ServerComponentsHmrCache
+
+  /**
+   * True when the request is for the prefetch flight data.
+   */
+  isPrefetchRSCRequest?: true
+
+  /**
+   * True when the request is for the flight data.
+   */
+  isRSCRequest?: true
+
+  /**
+   * Postponed state to use for resumption. If present it's assumed that the
+   * request is for a page that has postponed (there are no guarantees that the
+   * page actually has postponed though as it would incur an additional cache
+   * lookup).
+   */
+  postponed?: string
+
+  /**
+   * If provided, this will be called when a response cache entry was generated
+   * or looked up in the cache.
+   */
+  onCacheEntry?: (
+    cacheEntry: any,
+    requestMeta: any
+  ) => Promise<boolean | void> | boolean | void
+
+  /**
+   * The previous revalidate before rendering 404 page for notFound: true
+   */
+  notFoundRevalidate?: number | false
+
+  /**
+   * The path we routed to and should be invoked
+   */
+  invokePath?: string
+
+  /**
+   * The specific page output we should be matching
+   */
+  invokeOutput?: string
+
+  /**
+   * The status we are invoking the request with from routing
+   */
+  invokeStatus?: number
+
+  /**
+   * The routing error we are invoking with
+   */
+  invokeError?: Error
+
+  /**
+   * The query parsed for the invocation
+   */
+  invokeQuery?: Record<string, undefined | string | string[]>
+
+  /**
+   * Whether the request is a middleware invocation
+   */
+  middlewareInvoke?: boolean
+
+  /**
+   * Whether the default route matches were set on the request during routing.
+   */
+  didSetDefaultRouteMatches?: boolean
 }
 
+/**
+ * Gets the request metadata. If no key is provided, the entire metadata object
+ * is returned.
+ *
+ * @param req the request to get the metadata from
+ * @param key the key to get from the metadata (optional)
+ * @returns the value for the key or the entire metadata object
+ */
 export function getRequestMeta(
   req: NextIncomingMessage,
   key?: undefined
@@ -57,11 +166,26 @@ export function getRequestMeta<K extends keyof RequestMeta>(
   return typeof key === 'string' ? meta[key] : meta
 }
 
+/**
+ * Sets the request metadata.
+ *
+ * @param req the request to set the metadata on
+ * @param meta the metadata to set
+ * @returns the mutated request metadata
+ */
 export function setRequestMeta(req: NextIncomingMessage, meta: RequestMeta) {
   req[NEXT_REQUEST_META] = meta
-  return getRequestMeta(req)
+  return meta
 }
 
+/**
+ * Adds a value to the request metadata.
+ *
+ * @param request the request to mutate
+ * @param key the key to set
+ * @param value the value to set
+ * @returns the mutated request metadata
+ */
 export function addRequestMeta<K extends keyof RequestMeta>(
   request: NextIncomingMessage,
   key: K,
@@ -69,6 +193,22 @@ export function addRequestMeta<K extends keyof RequestMeta>(
 ) {
   const meta = getRequestMeta(request)
   meta[key] = value
+  return setRequestMeta(request, meta)
+}
+
+/**
+ * Removes a key from the request metadata.
+ *
+ * @param request the request to mutate
+ * @param key the key to remove
+ * @returns the mutated request metadata
+ */
+export function removeRequestMeta<K extends keyof RequestMeta>(
+  request: NextIncomingMessage,
+  key: K
+) {
+  const meta = getRequestMeta(request)
+  delete meta[key]
   return setRequestMeta(request, meta)
 }
 
@@ -95,8 +235,14 @@ type NextQueryMetadata = {
 
   __nextSsgPath?: string
   _nextBubbleNoFallback?: '1'
+
+  /**
+   * When set to `1`, the request is for the `/_next/data` route using the pages
+   * router.
+   */
   __nextDataReq?: '1'
   __nextCustomErrorRender?: '1'
+  [NEXT_RSC_UNION_QUERY]?: string
 }
 
 export type NextParsedUrlQuery = ParsedUrlQuery &

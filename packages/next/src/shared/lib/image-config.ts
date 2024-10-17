@@ -6,7 +6,7 @@ export const VALID_LOADERS = [
   'custom',
 ] as const
 
-export type LoaderValue = typeof VALID_LOADERS[number]
+export type LoaderValue = (typeof VALID_LOADERS)[number]
 
 export type ImageLoaderProps = {
   src: string
@@ -16,6 +16,21 @@ export type ImageLoaderProps = {
 
 export type ImageLoaderPropsWithConfig = ImageLoaderProps & {
   config: Readonly<ImageConfig>
+}
+
+export type LocalPattern = {
+  /**
+   * Can be literal or wildcard.
+   * Single `*` matches a single path segment.
+   * Double `**` matches any number of path segments.
+   */
+  pathname?: string
+
+  /**
+   * Can be literal query string such as `?v=1` or
+   * empty string meaning no query string.
+   */
+  search?: string
 }
 
 export type RemotePattern = {
@@ -43,6 +58,12 @@ export type RemotePattern = {
    * Double `**` matches any number of path segments.
    */
   pathname?: string
+
+  /**
+   * Can be literal query string such as `?v=1` or
+   * empty string meaning no query string.
+   */
+  search?: string
 }
 
 type ImageFormat = 'image/avif' | 'image/webp'
@@ -69,7 +90,7 @@ export type ImageConfigComplete = {
   loaderFile: string
 
   /**
-   * @see [Image domains configuration](https://nextjs.org/docs/api-reference/next/image#domains)
+   * @deprecated Use `remotePatterns` instead.
    */
   domains: string[]
 
@@ -91,8 +112,11 @@ export type ImageConfigComplete = {
   /** @see [Dangerously Allow SVG](https://nextjs.org/docs/api-reference/next/image#dangerously-allow-svg) */
   contentDispositionType: 'inline' | 'attachment'
 
-  /** @see [Remote Patterns](https://nextjs.org/docs/api-reference/next/image#remote-patterns) */
+  /** @see [Remote Patterns](https://nextjs.org/docs/api-reference/next/image#remotepatterns) */
   remotePatterns: RemotePattern[]
+
+  /** @see [Remote Patterns](https://nextjs.org/docs/api-reference/next/image#localPatterns) */
+  localPatterns: LocalPattern[] | undefined
 
   /** @see [Unoptimized](https://nextjs.org/docs/api-reference/next/image#unoptimized) */
   unoptimized: boolean
@@ -112,7 +136,8 @@ export const imageConfigDefault: ImageConfigComplete = {
   formats: ['image/webp'],
   dangerouslyAllowSVG: false,
   contentSecurityPolicy: `script-src 'none'; frame-src 'none'; sandbox;`,
-  contentDispositionType: 'inline',
-  remotePatterns: [],
+  contentDispositionType: 'attachment',
+  localPatterns: undefined, // default: allow all local images
+  remotePatterns: [], // default: allow no remote images
   unoptimized: false,
 }
