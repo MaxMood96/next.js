@@ -1,7 +1,10 @@
 import React from 'react'
 import type { FlightRouterState } from '../../../server/app-render/types'
-import { CacheNode, CacheStates } from '../../../shared/lib/app-router-context'
+import type { CacheNode } from '../../../shared/lib/app-router-context.shared-runtime'
 import { createInitialRouterState } from './create-initial-router-state'
+import { PrefetchCacheEntryStatus, PrefetchKind } from './router-reducer-types'
+
+const buildId = 'development'
 
 const getInitialRouterStateTree = (): FlightRouterState => [
   '',
@@ -31,29 +34,38 @@ describe('createInitialRouterState', () => {
     const initialParallelRoutes: CacheNode['parallelRoutes'] = new Map()
 
     const state = createInitialRouterState({
-      initialTree,
-      initialCanonicalUrl,
-      children,
+      buildId,
+      initialFlightData: [
+        [initialTree, ['', children, {}, null], <title>Test</title>],
+      ],
+      initialCanonicalUrlParts: initialCanonicalUrl.split('/'),
       initialParallelRoutes,
-      isServer: false,
       location: new URL('/linking', 'https://localhost') as any,
-      initialHead: <title>Test</title>,
+      couldBeIntercepted: false,
+      postponed: false,
+      prerendered: false,
     })
 
     const state2 = createInitialRouterState({
-      initialTree,
-      initialCanonicalUrl,
-      children,
+      buildId,
+      initialFlightData: [
+        [initialTree, ['', children, {}, null], <title>Test</title>],
+      ],
+      initialCanonicalUrlParts: initialCanonicalUrl.split('/'),
       initialParallelRoutes,
-      isServer: false,
       location: new URL('/linking', 'https://localhost') as any,
-      initialHead: <title>Test</title>,
+      couldBeIntercepted: false,
+      postponed: false,
+      prerendered: false,
     })
 
     const expectedCache: CacheNode = {
-      status: CacheStates.READY,
-      data: null,
-      subTreeData: children,
+      lazyData: null,
+      rsc: children,
+      prefetchRsc: null,
+      head: null,
+      prefetchHead: null,
+      loading: null,
       parallelRoutes: new Map([
         [
           'children',
@@ -61,7 +73,6 @@ describe('createInitialRouterState', () => {
             [
               'linking',
               {
-                status: CacheStates.LAZY_INITIALIZED,
                 parallelRoutes: new Map([
                   [
                     'children',
@@ -69,18 +80,24 @@ describe('createInitialRouterState', () => {
                       [
                         '',
                         {
-                          status: CacheStates.LAZY_INITIALIZED,
-                          data: null,
-                          subTreeData: null,
+                          lazyData: null,
+                          rsc: null,
+                          prefetchRsc: null,
                           parallelRoutes: new Map(),
+                          loading: null,
                           head: <title>Test</title>,
+                          prefetchHead: null,
                         },
                       ],
                     ]),
                   ],
                 ]),
-                data: null,
-                subTreeData: null,
+                lazyData: null,
+                rsc: null,
+                prefetchRsc: null,
+                head: null,
+                prefetchHead: null,
+                loading: null,
               },
             ],
           ]),
@@ -89,11 +106,36 @@ describe('createInitialRouterState', () => {
     }
 
     const expected: ReturnType<typeof createInitialRouterState> = {
+      buildId,
       tree: initialTree,
       canonicalUrl: initialCanonicalUrl,
-      prefetchCache: new Map(),
-      pushRef: { pendingPush: false, mpaNavigation: false },
-      focusAndScrollRef: { apply: false, hashFragment: null, segmentPaths: [] },
+      prefetchCache: new Map([
+        [
+          '/linking',
+          {
+            key: '/linking',
+            data: expect.any(Promise),
+            prefetchTime: expect.any(Number),
+            kind: PrefetchKind.AUTO,
+            lastUsedTime: expect.any(Number),
+            treeAtTimeOfPrefetch: initialTree,
+            status: PrefetchCacheEntryStatus.fresh,
+            url: new URL('/linking', 'https://localhost'),
+            staleTime: -1,
+          },
+        ],
+      ]),
+      pushRef: {
+        pendingPush: false,
+        mpaNavigation: false,
+        preserveCustomHistoryState: true,
+      },
+      focusAndScrollRef: {
+        apply: false,
+        onlyHashChange: false,
+        hashFragment: null,
+        segmentPaths: [],
+      },
       cache: expectedCache,
       nextUrl: '/linking',
     }
