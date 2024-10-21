@@ -1,70 +1,53 @@
-import { sandbox } from './helpers'
-import { createNext } from 'e2e-utils'
-import { NextInstance } from 'test/lib/next-modes/base'
-import { getSnapshotTestDescribe } from 'next-test-utils'
+import { sandbox } from 'development-sandbox'
+import { FileRef, nextTestSetup } from 'e2e-utils'
+import { describeVariants as describe } from 'next-test-utils'
+import { outdent } from 'outdent'
+import path from 'path'
 
-for (const variant of ['default', 'turbo']) {
-  getSnapshotTestDescribe(variant)(`ReactRefreshLogBox ${variant}`, () => {
-    let next: NextInstance
-
-    beforeAll(async () => {
-      next = await createNext({
-        files: {},
-        skipStart: true,
-      })
+describe.each(['default', 'turbo'])(
+  'ReactRefreshLogBox _app _document %s',
+  () => {
+    const { next } = nextTestSetup({
+      files: new FileRef(path.join(__dirname, 'fixtures', 'default-template')),
+      skipStart: true,
     })
-    afterAll(() => next.destroy())
 
     test('empty _app shows logbox', async () => {
       const { session, cleanup } = await sandbox(
         next,
-        new Map([
-          [
-            'pages/_app.js',
-            `
-
-          `,
-          ],
-        ])
+        new Map([['pages/_app.js', ``]])
       )
-      expect(await session.hasRedbox(true)).toBe(true)
+      await session.assertHasRedbox()
       expect(await session.getRedboxDescription()).toMatchInlineSnapshot(
-        `"Error: The default export is not a React Component in page: \\"/_app\\""`
+        `"Error: The default export is not a React Component in page: "/_app""`
       )
 
       await session.patch(
         'pages/_app.js',
-        `
+        outdent`
         function MyApp({ Component, pageProps }) {
           return <Component {...pageProps} />;
         }
         export default MyApp
       `
       )
-      expect(await session.hasRedbox(false)).toBe(false)
+      await session.assertNoRedbox()
       await cleanup()
     })
 
     test('empty _document shows logbox', async () => {
       const { session, cleanup } = await sandbox(
         next,
-        new Map([
-          [
-            'pages/_document.js',
-            `
-
-          `,
-          ],
-        ])
+        new Map([['pages/_document.js', ``]])
       )
-      expect(await session.hasRedbox(true)).toBe(true)
+      await session.assertHasRedbox()
       expect(await session.getRedboxDescription()).toMatchInlineSnapshot(
-        `"Error: The default export is not a React Component in page: \\"/_document\\""`
+        `"Error: The default export is not a React Component in page: "/_document""`
       )
 
       await session.patch(
         'pages/_document.js',
-        `
+        outdent`
         import Document, { Html, Head, Main, NextScript } from 'next/document'
 
         class MyDocument extends Document {
@@ -89,7 +72,7 @@ for (const variant of ['default', 'turbo']) {
         export default MyDocument
       `
       )
-      expect(await session.hasRedbox(false)).toBe(false)
+      await session.assertNoRedbox()
       await cleanup()
     })
 
@@ -99,7 +82,7 @@ for (const variant of ['default', 'turbo']) {
         new Map([
           [
             'pages/_app.js',
-            `
+            outdent`
             function MyApp({ Component, pageProps }) {
               return <<Component {...pageProps} />;
             }
@@ -108,50 +91,56 @@ for (const variant of ['default', 'turbo']) {
           ],
         ])
       )
-      expect(await session.hasRedbox(true)).toBe(true)
-      expect(
-        next.normalizeTestDirContent(await session.getRedboxSource())
-      ).toMatchInlineSnapshot(
-        next.normalizeSnapshot(`
-        "./pages/_app.js
-        Error: 
-          x Expression expected
-           ,-[TEST_DIR/pages/_app.js:1:1]
-         1 | 
-         2 |             function MyApp({ Component, pageProps }) {
-         3 |               return <<Component {...pageProps} />;
-           :                       ^
-         4 |             }
-         5 |             export default MyApp
-         6 |           
-           \`----
+      await session.assertHasRedbox()
+      const content = await session.getRedboxSource()
+      const source = next.normalizeTestDirContent(content)
+      if (process.env.TURBOPACK) {
+        expect(source).toMatchInlineSnapshot(`
+          "./pages/_app.js:2:11
+          Parsing ecmascript source code failed
+            1 | function MyApp({ Component, pageProps }) {
+          > 2 |   return <<Component {...pageProps} />;
+              |           ^
+            3 | }
+            4 | export default MyApp
 
-          x Expression expected
-           ,-[TEST_DIR/pages/_app.js:1:1]
-         1 | 
-         2 |             function MyApp({ Component, pageProps }) {
-         3 |               return <<Component {...pageProps} />;
-           :                        ^^^^^^^^^
-         4 |             }
-         5 |             export default MyApp
-         6 |           
-           \`----
+          Expression expected"
+        `)
+      } else {
+        expect(source).toMatchInlineSnapshot(`
+          "./pages/_app.js
+          Error:   x Expression expected
+             ,-[2:1]
+           1 | function MyApp({ Component, pageProps }) {
+           2 |   return <<Component {...pageProps} />;
+             :           ^
+           3 | }
+           4 | export default MyApp
+             \`----
+            x Expression expected
+             ,-[2:1]
+           1 | function MyApp({ Component, pageProps }) {
+           2 |   return <<Component {...pageProps} />;
+             :            ^^^^^^^^^
+           3 | }
+           4 | export default MyApp
+             \`----
 
-        Caused by:
-            Syntax Error"
-      `)
-      )
+          Caused by:
+              Syntax Error"
+        `)
+      }
 
       await session.patch(
         'pages/_app.js',
-        `
+        outdent`
         function MyApp({ Component, pageProps }) {
           return <Component {...pageProps} />;
         }
         export default MyApp
       `
       )
-      expect(await session.hasRedbox(false)).toBe(false)
+      await session.assertNoRedbox()
       await cleanup()
     })
 
@@ -161,7 +150,7 @@ for (const variant of ['default', 'turbo']) {
         new Map([
           [
             'pages/_document.js',
-            `
+            outdent`
             import Document, { Html, Head, Main, NextScript } from 'next/document'
 
             class MyDocument extends Document {{
@@ -188,33 +177,46 @@ for (const variant of ['default', 'turbo']) {
           ],
         ])
       )
-      expect(await session.hasRedbox(true)).toBe(true)
-      expect(
-        next.normalizeTestDirContent(await session.getRedboxSource())
-      ).toMatchInlineSnapshot(
-        next.normalizeSnapshot(`
-        "./pages/_document.js
-        Error: 
-          x Unexpected token \`{\`. Expected identifier, string literal, numeric literal or [ for the computed key
-           ,-[TEST_DIR/pages/_document.js:1:1]
-         1 | 
-         2 |             import Document, { Html, Head, Main, NextScript } from 'next/document'
-         3 | 
-         4 |             class MyDocument extends Document {{
-           :                                                ^
-         5 |               static async getInitialProps(ctx) {
-         6 |                 const initialProps = await Document.getInitialProps(ctx)
-         7 |                 return { ...initialProps }
-           \`----
-
-        Caused by:
-            Syntax Error"
-      `)
+      await session.assertHasRedbox()
+      const source = next.normalizeTestDirContent(
+        await session.getRedboxSource()
       )
+      if (process.env.TURBOPACK) {
+        expect(source).toMatchInlineSnapshot(`
+          "./pages/_document.js:3:36
+          Parsing ecmascript source code failed
+            1 | import Document, { Html, Head, Main, NextScript } from 'next/document'
+            2 |
+          > 3 | class MyDocument extends Document {{
+              |                                    ^
+            4 |   static async getInitialProps(ctx) {
+            5 |     const initialProps = await Document.getInitialProps(ctx)
+            6 |     return { ...initialProps }
+
+          Unexpected token \`{\`. Expected identifier, string literal, numeric literal or [ for the computed key"
+        `)
+      } else {
+        expect(source).toMatchInlineSnapshot(`
+          "./pages/_document.js
+          Error:   x Unexpected token \`{\`. Expected identifier, string literal, numeric literal or [ for the computed key
+             ,-[3:1]
+           1 | import Document, { Html, Head, Main, NextScript } from 'next/document'
+           2 | 
+           3 | class MyDocument extends Document {{
+             :                                    ^
+           4 |   static async getInitialProps(ctx) {
+           5 |     const initialProps = await Document.getInitialProps(ctx)
+           6 |     return { ...initialProps }
+             \`----
+
+          Caused by:
+              Syntax Error"
+        `)
+      }
 
       await session.patch(
         'pages/_document.js',
-        `
+        outdent`
         import Document, { Html, Head, Main, NextScript } from 'next/document'
 
         class MyDocument extends Document {
@@ -239,8 +241,8 @@ for (const variant of ['default', 'turbo']) {
         export default MyDocument
       `
       )
-      expect(await session.hasRedbox(false)).toBe(false)
+      await session.assertNoRedbox()
       await cleanup()
     })
-  })
-}
+  }
+)

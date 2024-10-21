@@ -1,21 +1,14 @@
-import { createNext, FileRef } from 'e2e-utils'
-import { NextInstance } from 'test/lib/next-modes/base'
-import { fetchViaHTTP, normalizeRegEx, renderViaHTTP } from 'next-test-utils'
+import { nextTestSetup } from 'e2e-utils'
+import { fetchViaHTTP, normalizeRegEx } from 'next-test-utils'
 import cheerio from 'cheerio'
 import { join } from 'path'
 import escapeStringRegexp from 'escape-string-regexp'
 import fs from 'fs-extra'
 
 describe('edge-render-getserversideprops', () => {
-  let next: NextInstance
-
-  beforeAll(async () => {
-    next = await createNext({
-      files: new FileRef(join(__dirname, 'app')),
-      dependencies: {},
-    })
+  const { next } = nextTestSetup({
+    files: join(__dirname, 'app'),
   })
-  afterAll(() => next.destroy())
 
   if ((global as any).isNextStart) {
     it('should not output trace files for edge routes', async () => {
@@ -63,7 +56,9 @@ describe('edge-render-getserversideprops', () => {
   })
 
   it('should have correct query/params on index', async () => {
-    const html = await renderViaHTTP(next.url, '/')
+    const res = await fetchViaHTTP(next.url, '/')
+    expect(res.status).toBe(200)
+    const html = await res.text()
     const $ = cheerio.load(html)
     expect($('#page').text()).toBe('/index')
     const props = JSON.parse($('#props').text())
@@ -73,7 +68,9 @@ describe('edge-render-getserversideprops', () => {
   })
 
   it('should have correct query/params on /[id]', async () => {
-    const html = await renderViaHTTP(next.url, '/123', { hello: 'world' })
+    const res = await fetchViaHTTP(next.url, '/123', { hello: 'world' })
+    expect(res.status).toBe(200)
+    const html = await res.text()
     const $ = cheerio.load(html)
     expect($('#page').text()).toBe('/[id]')
     const props = JSON.parse($('#props').text())
@@ -83,9 +80,11 @@ describe('edge-render-getserversideprops', () => {
   })
 
   it('should have correct query/params on rewrite', async () => {
-    const html = await renderViaHTTP(next.url, '/rewrite-me', {
+    const res = await fetchViaHTTP(next.url, '/rewrite-me', {
       hello: 'world',
     })
+    expect(res.status).toBe(200)
+    const html = await res.text()
     const $ = cheerio.load(html)
     expect($('#page').text()).toBe('/index')
     const props = JSON.parse($('#props').text())
@@ -95,9 +94,11 @@ describe('edge-render-getserversideprops', () => {
   })
 
   it('should have correct query/params on dynamic rewrite', async () => {
-    const html = await renderViaHTTP(next.url, '/rewrite-me-dynamic', {
+    const res = await fetchViaHTTP(next.url, '/rewrite-me-dynamic', {
       hello: 'world',
     })
+    expect(res.status).toBe(200)
+    const html = await res.text()
     const $ = cheerio.load(html)
     expect($('#page').text()).toBe('/[id]')
     const props = JSON.parse($('#props').text())
