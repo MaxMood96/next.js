@@ -1,67 +1,59 @@
 /* eslint-env jest */
-import { sandbox } from './helpers'
-import { createNext, FileRef } from 'e2e-utils'
-import { NextInstance } from 'test/lib/next-modes/base'
-import { check, getSnapshotTestDescribe } from 'next-test-utils'
+import { sandbox } from 'development-sandbox'
+import { FileRef, nextTestSetup } from 'e2e-utils'
+import {
+  check,
+  describeVariants as describe,
+  getRedboxCallStackCollapsed,
+  retry,
+} from 'next-test-utils'
 import path from 'path'
+import { outdent } from 'outdent'
 
-for (const variant of ['default', 'turbo']) {
-  getSnapshotTestDescribe(variant)(`ReactRefreshLogBox app ${variant}`, () => {
-    let next: NextInstance
+describe.each(['default', 'turbo'])('ReactRefreshLogBox app %s', () => {
+  const { next, isTurbopack } = nextTestSetup({
+    files: new FileRef(path.join(__dirname, 'fixtures', 'default-template')),
+    skipStart: true,
+  })
 
-    beforeAll(async () => {
-      next = await createNext({
-        files: new FileRef(
-          path.join(__dirname, 'fixtures', 'default-template')
-        ),
-        dependencies: {
-          react: 'latest',
-          'react-dom': 'latest',
-        },
-        skipStart: true,
-      })
-    })
-    afterAll(() => next.destroy())
+  test('should strip whitespace correctly with newline', async () => {
+    const { session, cleanup } = await sandbox(next)
 
-    test('should strip whitespace correctly with newline', async () => {
-      const { session, cleanup } = await sandbox(next)
-
-      await session.patch(
-        'index.js',
-        `
+    await session.patch(
+      'index.js',
+      outdent`
         export default function Page() {
           return (
             <>
+              <p>index page</p>
 
-                          <p>index page</p>
-
-                          <a onClick={() => {
-                            throw new Error('idk')
-                          }}>
-                            click me
-                          </a>
+              <a onClick={() => {
+                throw new Error('idk')
+              }}>
+                click me
+              </a>
             </>
           )
         }
       `
-      )
-      await session.evaluate(() => document.querySelector('a').click())
+    )
+    await session.evaluate(() => document.querySelector('a').click())
 
-      await session.waitForAndOpenRuntimeError()
-      expect(await session.getRedboxSource()).toMatchSnapshot()
+    await session.waitForAndOpenRuntimeError()
+    expect(await session.getRedboxSource()).toMatchSnapshot()
 
-      await cleanup()
-    })
+    await cleanup()
+  })
 
-    // https://github.com/pmmmwh/react-refresh-webpack-plugin/pull/3#issuecomment-554137807
-    test('module init error not shown', async () => {
-      // Start here:
-      const { session, cleanup } = await sandbox(next)
+  // https://github.com/pmmmwh/react-refresh-webpack-plugin/pull/3#issuecomment-554137807
+  test('module init error not shown', async () => {
+    // Start here:
+    const { session, cleanup } = await sandbox(next)
 
-      // We start here.
-      await session.patch(
-        'index.js',
-        `
+    // We start here.
+    await session.patch(
+      'index.js',
+      outdent`
         import * as React from 'react';
         class ClassDefault extends React.Component {
           render() {
@@ -70,16 +62,16 @@ for (const variant of ['default', 'turbo']) {
         }
         export default ClassDefault;
       `
-      )
+    )
 
-      expect(
-        await session.evaluate(() => document.querySelector('h1').textContent)
-      ).toBe('Default Export')
+    expect(
+      await session.evaluate(() => document.querySelector('h1').textContent)
+    ).toBe('Default Export')
 
-      // Add a throw in module init phase:
-      await session.patch(
-        'index.js',
-        `
+    // Add a throw in module init phase:
+    await session.patch(
+      'index.js',
+      outdent`
         // top offset for snapshot
         import * as React from 'react';
         throw new Error('no')
@@ -90,33 +82,33 @@ for (const variant of ['default', 'turbo']) {
         }
         export default ClassDefault;
       `
-      )
+    )
 
-      expect(await session.hasRedbox(true)).toBe(true)
-      if (process.platform === 'win32') {
-        expect(await session.getRedboxSource()).toMatchSnapshot()
-      } else {
-        expect(await session.getRedboxSource()).toMatchSnapshot()
-      }
+    await session.assertHasRedbox()
+    if (process.platform === 'win32') {
+      expect(await session.getRedboxSource()).toMatchSnapshot()
+    } else {
+      expect(await session.getRedboxSource()).toMatchSnapshot()
+    }
 
-      await cleanup()
-    })
+    await cleanup()
+  })
 
-    // https://github.com/pmmmwh/react-refresh-webpack-plugin/pull/3#issuecomment-554152127
-    test('boundaries', async () => {
-      const { session, cleanup } = await sandbox(next)
+  // https://github.com/pmmmwh/react-refresh-webpack-plugin/pull/3#issuecomment-554152127
+  test('boundaries', async () => {
+    const { session, cleanup } = await sandbox(next)
 
-      await session.write(
-        'FunctionDefault.js',
-        `
+    await session.write(
+      'FunctionDefault.js',
+      outdent`
         export default function FunctionDefault() {
           return <h2>hello</h2>
         }
       `
-      )
-      await session.patch(
-        'index.js',
-        `
+    )
+    await session.patch(
+      'index.js',
+      outdent`
         import FunctionDefault from './FunctionDefault.js'
         import * as React from 'react'
         class ErrorBoundary extends React.Component {
@@ -146,58 +138,59 @@ for (const variant of ['default', 'turbo']) {
         }
         export default App;
       `
-      )
+    )
 
-      expect(
-        await session.evaluate(() => document.querySelector('h2').textContent)
-      ).toBe('hello')
+    expect(
+      await session.evaluate(() => document.querySelector('h2').textContent)
+    ).toBe('hello')
 
-      await session.write(
-        'FunctionDefault.js',
-        `export default function FunctionDefault() { throw new Error('no'); }`
-      )
+    await session.write(
+      'FunctionDefault.js',
+      `export default function FunctionDefault() { throw new Error('no'); }`
+    )
 
-      await session.waitForAndOpenRuntimeError()
-      expect(await session.getRedboxSource()).toMatchSnapshot()
-      expect(
-        await session.evaluate(() => document.querySelector('h2').textContent)
-      ).toBe('error')
+    await session.waitForAndOpenRuntimeError()
+    expect(await session.getRedboxSource()).toMatchSnapshot()
+    expect(
+      await session.evaluate(() => document.querySelector('h2').textContent)
+    ).toBe('error')
 
-      await cleanup()
-    })
+    await cleanup()
+  })
 
-    // TODO: investigate why this fails when running outside of the Next.js
-    // monorepo e.g. fails when using yarn create next-app
-    // https://github.com/vercel/next.js/pull/23203
-    test.skip('internal package errors', async () => {
-      const { session, cleanup } = await sandbox(next)
+  // TODO: investigate why this fails when running outside of the Next.js
+  // monorepo e.g. fails when using pnpm create next-app
+  // https://github.com/vercel/next.js/pull/23203
+  test.skip('internal package errors', async () => {
+    const { session, cleanup } = await sandbox(next)
 
-      // Make a react build-time error.
-      await session.patch(
-        'index.js',
-        `
+    // Make a react build-time error.
+    await session.patch(
+      'index.js',
+      outdent`
         export default function FunctionNamed() {
           return <div>{{}}</div>
-        }`
-      )
+        }
+      `
+    )
 
-      expect(await session.hasRedbox(true)).toBe(true)
-      // We internally only check the script path, not including the line number
-      // and error message because the error comes from an external library.
-      // This test ensures that the errored script path is correctly resolved.
-      expect(await session.getRedboxSource()).toContain(
-        `../../../../packages/next/dist/pages/_document.js`
-      )
+    await session.assertHasRedbox()
+    // We internally only check the script path, not including the line number
+    // and error message because the error comes from an external library.
+    // This test ensures that the errored script path is correctly resolved.
+    expect(await session.getRedboxSource()).toContain(
+      `../../../../packages/next/dist/pages/_document.js`
+    )
 
-      await cleanup()
-    })
+    await cleanup()
+  })
 
-    test('unterminated JSX', async () => {
-      const { session, cleanup } = await sandbox(next)
+  test('unterminated JSX', async () => {
+    const { session, cleanup } = await sandbox(next)
 
-      await session.patch(
-        'index.js',
-        `
+    await session.patch(
+      'index.js',
+      outdent`
         export default () => {
           return (
             <div>
@@ -206,13 +199,13 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
-      )
+    )
 
-      expect(await session.hasRedbox(false)).toBe(false)
+    await session.assertNoRedbox()
 
-      await session.patch(
-        'index.js',
-        `
+    await session.patch(
+      'index.js',
+      outdent`
         export default () => {
           return (
             <div>
@@ -221,31 +214,39 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
-      )
+    )
 
-      expect(await session.hasRedbox(true)).toBe(true)
+    await session.assertHasRedbox()
 
-      const source = await session.getRedboxSource()
-      expect(next.normalizeTestDirContent(source)).toMatchInlineSnapshot(
-        next.normalizeSnapshot(`
-        "./index.js
-        Error: 
-          x Unexpected token. Did you mean \`{'}'}\` or \`&rbrace;\`?
-           ,-[TEST_DIR/index.js:5:1]
-         5 |               <p>lol</p>
-         6 |             div
-         7 |           )
-         8 |         }
-           :         ^
-         9 |       
+    const source = next.normalizeTestDirContent(await session.getRedboxSource())
+    if (isTurbopack) {
+      expect(source).toEqual(outdent`
+        ./index.js:7:1
+        Parsing ecmascript source code failed
+          5 |     div
+          6 |   )
+        > 7 | }
+            | ^
+
+        Unexpected token. Did you mean \`{'}'}\` or \`&rbrace;\`?
+      `)
+    } else {
+      expect(source).toEqual(outdent`
+        ./index.js
+        Error:   x Unexpected token. Did you mean \`{'}'}\` or \`&rbrace;\`?
+           ,-[7:1]
+         4 |       <p>lol</p>
+         5 |     div
+         6 |   )
+         7 | }
+           : ^
            \`----
-
           x Unexpected eof
-           ,-[TEST_DIR/index.js:6:1]
-         6 |             div
-         7 |           )
-         8 |         }
-         9 |       
+           ,-[7:1]
+         4 |       <p>lol</p>
+         5 |     div
+         6 |   )
+         7 | }
            \`----
 
         Caused by:
@@ -253,29 +254,29 @@ for (const variant of ['default', 'turbo']) {
 
         Import trace for requested module:
         ./index.js
-        ./app/page.js"
+        ./app/page.js
       `)
-      )
+    }
 
-      await cleanup()
-    })
+    await cleanup()
+  })
 
-    // Module trace is only available with webpack 5
-    test('conversion to class component (1)', async () => {
-      const { session, cleanup } = await sandbox(next)
+  // Module trace is only available with webpack 5
+  test('conversion to class component (1)', async () => {
+    const { session, cleanup } = await sandbox(next)
 
-      await session.write(
-        'Child.js',
-        `
+    await session.write(
+      'Child.js',
+      outdent`
         export default function ClickCount() {
           return <p>hello</p>
         }
       `
-      )
+    )
 
-      await session.patch(
-        'index.js',
-        `
+    await session.patch(
+      'index.js',
+      outdent`
         import Child from './Child';
 
         export default function Home() {
@@ -286,16 +287,16 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
-      )
+    )
 
-      expect(await session.hasRedbox(false)).toBe(false)
-      expect(
-        await session.evaluate(() => document.querySelector('p').textContent)
-      ).toBe('hello')
+    await session.assertNoRedbox()
+    expect(
+      await session.evaluate(() => document.querySelector('p').textContent)
+    ).toBe('hello')
 
-      await session.patch(
-        'Child.js',
-        `
+    await session.patch(
+      'Child.js',
+      outdent`
         import { Component } from 'react';
         export default class ClickCount extends Component {
           render() {
@@ -303,38 +304,38 @@ for (const variant of ['default', 'turbo']) {
           }
         }
       `
-      )
+    )
 
-      expect(await session.hasRedbox(true)).toBe(true)
-      expect(await session.getRedboxSource()).toMatchSnapshot()
+    await session.assertHasRedbox()
+    expect(await session.getRedboxSource()).toMatchSnapshot()
 
-      await session.patch(
-        'Child.js',
-        `
-      import { Component } from 'react';
+    await session.patch(
+      'Child.js',
+      outdent`
+        import { Component } from 'react';
         export default class ClickCount extends Component {
           render() {
             return <p>hello new</p>
           }
         }
       `
-      )
+    )
 
-      expect(await session.hasRedbox(false)).toBe(false)
-      expect(
-        await session.evaluate(() => document.querySelector('p').textContent)
-      ).toBe('hello new')
+    await session.assertNoRedbox()
+    expect(
+      await session.evaluate(() => document.querySelector('p').textContent)
+    ).toBe('hello new')
 
-      await cleanup()
-    })
+    await cleanup()
+  })
 
-    test('css syntax errors', async () => {
-      const { session, cleanup } = await sandbox(next)
+  test('css syntax errors', async () => {
+    const { session, cleanup } = await sandbox(next)
 
-      await session.write('index.module.css', `.button {}`)
-      await session.patch(
-        'index.js',
-        `
+    await session.write('index.module.css', `.button {}`)
+    await session.patch(
+      'index.js',
+      outdent`
         import './index.module.css';
         export default () => {
           return (
@@ -344,40 +345,45 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
-      )
+    )
 
-      expect(await session.hasRedbox(false)).toBe(false)
+    await session.assertNoRedbox()
 
-      // Syntax error
-      await session.patch('index.module.css', `.button {`)
-      expect(await session.hasRedbox(true)).toBe(true)
-      const source = await session.getRedboxSource()
-      expect(source).toMatch('./index.module.css (1:1)')
+    // Syntax error
+    await session.patch('index.module.css', `.button`)
+    await session.assertHasRedbox()
+    const source = await session.getRedboxSource()
+    expect(source).toMatch(
+      isTurbopack ? './index.module.css:1:9' : './index.module.css:1:1'
+    )
+    if (!isTurbopack) {
       expect(source).toMatch('Syntax error: ')
-      expect(source).toMatch('Unclosed block')
-      expect(source).toMatch('> 1 | .button {')
-      expect(source).toMatch('    | ^')
+      expect(source).toMatch('Unknown word')
+    }
+    expect(source).toMatch('> 1 | .button')
+    expect(source).toMatch(isTurbopack ? '    |         ^' : '    | ^')
 
-      // Not local error
-      await session.patch('index.module.css', `button {}`)
-      expect(await session.hasRedbox(true)).toBe(true)
-      const source2 = await session.getRedboxSource()
-      expect(source2).toMatchSnapshot()
+    // Checks for selectors that can't be prefixed.
+    // Selector "button" is not pure (pure selectors must contain at least one local class or id)
+    await session.patch('index.module.css', `button {}`)
+    await session.assertHasRedbox()
+    const source2 = await session.getRedboxSource()
+    expect(source2).toMatchSnapshot()
 
-      await cleanup()
-    })
+    await cleanup()
+  })
 
-    test('logbox: anchors links in error messages', async () => {
-      const { session, cleanup } = await sandbox(next)
+  test('logbox: anchors links in error messages', async () => {
+    const { session, cleanup } = await sandbox(next)
 
-      await session.patch(
-        'index.js',
-        `
+    await session.patch(
+      'index.js',
+      outdent`
         import { useCallback } from 'react'
 
         export default function Index() {
           const boom = useCallback(() => {
-            throw new Error('end http://nextjs.org')
+            throw new Error('end https://nextjs.org')
           }, [])
           return (
             <main>
@@ -386,43 +392,43 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
+    )
+
+    await session.evaluate(() => document.querySelector('button').click())
+    await session.waitForAndOpenRuntimeError()
+
+    const header = await session.getRedboxDescription()
+    expect(header).toMatchSnapshot()
+    expect(
+      await session.evaluate(
+        () =>
+          document
+            .querySelector('body > nextjs-portal')
+            .shadowRoot.querySelectorAll('#nextjs__container_errors_desc a')
+            .length
       )
-
-      await session.evaluate(() => document.querySelector('button').click())
-      await session.waitForAndOpenRuntimeError()
-
-      const header = await session.getRedboxDescription()
-      expect(header).toMatchSnapshot()
-      expect(
-        await session.evaluate(
-          () =>
+    ).toBe(1)
+    expect(
+      await session.evaluate(
+        () =>
+          (
             document
               .querySelector('body > nextjs-portal')
-              .shadowRoot.querySelectorAll('#nextjs__container_errors_desc a')
-              .length
-        )
-      ).toBe(1)
-      expect(
-        await session.evaluate(
-          () =>
-            (
-              document
-                .querySelector('body > nextjs-portal')
-                .shadowRoot.querySelector(
-                  '#nextjs__container_errors_desc a:nth-of-type(1)'
-                ) as any
-            ).href
-        )
-      ).toMatchSnapshot()
+              .shadowRoot.querySelector(
+                '#nextjs__container_errors_desc a:nth-of-type(1)'
+              ) as any
+          ).href
+      )
+    ).toMatchSnapshot()
 
-      await session.patch(
-        'index.js',
-        `
+    await session.patch(
+      'index.js',
+      outdent`
         import { useCallback } from 'react'
 
         export default function Index() {
           const boom = useCallback(() => {
-            throw new Error('http://nextjs.org start')
+            throw new Error('https://nextjs.org start')
           }, [])
           return (
             <main>
@@ -431,43 +437,43 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
+    )
+
+    await session.evaluate(() => document.querySelector('button').click())
+    await session.waitForAndOpenRuntimeError()
+
+    const header2 = await session.getRedboxDescription()
+    expect(header2).toMatchSnapshot()
+    expect(
+      await session.evaluate(
+        () =>
+          document
+            .querySelector('body > nextjs-portal')
+            .shadowRoot.querySelectorAll('#nextjs__container_errors_desc a')
+            .length
       )
-
-      await session.evaluate(() => document.querySelector('button').click())
-      await session.waitForAndOpenRuntimeError()
-
-      const header2 = await session.getRedboxDescription()
-      expect(header2).toMatchSnapshot()
-      expect(
-        await session.evaluate(
-          () =>
+    ).toBe(1)
+    expect(
+      await session.evaluate(
+        () =>
+          (
             document
               .querySelector('body > nextjs-portal')
-              .shadowRoot.querySelectorAll('#nextjs__container_errors_desc a')
-              .length
-        )
-      ).toBe(1)
-      expect(
-        await session.evaluate(
-          () =>
-            (
-              document
-                .querySelector('body > nextjs-portal')
-                .shadowRoot.querySelector(
-                  '#nextjs__container_errors_desc a:nth-of-type(1)'
-                ) as any
-            ).href
-        )
-      ).toMatchSnapshot()
+              .shadowRoot.querySelector(
+                '#nextjs__container_errors_desc a:nth-of-type(1)'
+              ) as any
+          ).href
+      )
+    ).toMatchSnapshot()
 
-      await session.patch(
-        'index.js',
-        `
+    await session.patch(
+      'index.js',
+      outdent`
         import { useCallback } from 'react'
 
         export default function Index() {
           const boom = useCallback(() => {
-            throw new Error('middle http://nextjs.org end')
+            throw new Error('middle https://nextjs.org end')
           }, [])
           return (
             <main>
@@ -476,43 +482,43 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
+    )
+
+    await session.evaluate(() => document.querySelector('button').click())
+    await session.waitForAndOpenRuntimeError()
+
+    const header3 = await session.getRedboxDescription()
+    expect(header3).toMatchSnapshot()
+    expect(
+      await session.evaluate(
+        () =>
+          document
+            .querySelector('body > nextjs-portal')
+            .shadowRoot.querySelectorAll('#nextjs__container_errors_desc a')
+            .length
       )
-
-      await session.evaluate(() => document.querySelector('button').click())
-      await session.waitForAndOpenRuntimeError()
-
-      const header3 = await session.getRedboxDescription()
-      expect(header3).toMatchSnapshot()
-      expect(
-        await session.evaluate(
-          () =>
+    ).toBe(1)
+    expect(
+      await session.evaluate(
+        () =>
+          (
             document
               .querySelector('body > nextjs-portal')
-              .shadowRoot.querySelectorAll('#nextjs__container_errors_desc a')
-              .length
-        )
-      ).toBe(1)
-      expect(
-        await session.evaluate(
-          () =>
-            (
-              document
-                .querySelector('body > nextjs-portal')
-                .shadowRoot.querySelector(
-                  '#nextjs__container_errors_desc a:nth-of-type(1)'
-                ) as any
-            ).href
-        )
-      ).toMatchSnapshot()
+              .shadowRoot.querySelector(
+                '#nextjs__container_errors_desc a:nth-of-type(1)'
+              ) as any
+          ).href
+      )
+    ).toMatchSnapshot()
 
-      await session.patch(
-        'index.js',
-        `
+    await session.patch(
+      'index.js',
+      outdent`
         import { useCallback } from 'react'
 
         export default function Index() {
           const boom = useCallback(() => {
-            throw new Error('multiple http://nextjs.org links http://example.com')
+            throw new Error('multiple https://nextjs.org links http://example.com')
           }, [])
           return (
             <main>
@@ -521,59 +527,60 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
-      )
+    )
 
-      await session.evaluate(() => document.querySelector('button').click())
-      await session.waitForAndOpenRuntimeError()
+    await session.evaluate(() => document.querySelector('button').click())
+    await session.waitForAndOpenRuntimeError()
 
-      const header4 = await session.getRedboxDescription()
-      expect(header4).toMatchInlineSnapshot(
-        `"Error: multiple http://nextjs.org links http://example.com"`
+    const header4 = await session.getRedboxDescription()
+    expect(header4).toEqual(
+      `Error: multiple https://nextjs.org links http://example.com`
+    )
+    // Do not highlight example.com but do highlight nextjs.org
+    expect(
+      await session.evaluate(
+        () =>
+          document
+            .querySelector('body > nextjs-portal')
+            .shadowRoot.querySelectorAll('#nextjs__container_errors_desc a')
+            .length
       )
-      expect(
-        await session.evaluate(
-          () =>
+    ).toBe(1)
+    expect(
+      await session.evaluate(
+        () =>
+          (
             document
               .querySelector('body > nextjs-portal')
-              .shadowRoot.querySelectorAll('#nextjs__container_errors_desc a')
-              .length
-        )
-      ).toBe(2)
-      expect(
-        await session.evaluate(
-          () =>
-            (
-              document
-                .querySelector('body > nextjs-portal')
-                .shadowRoot.querySelector(
-                  '#nextjs__container_errors_desc a:nth-of-type(1)'
-                ) as any
-            ).href
-        )
-      ).toMatchSnapshot()
-      expect(
-        await session.evaluate(
-          () =>
-            (
-              document
-                .querySelector('body > nextjs-portal')
-                .shadowRoot.querySelector(
-                  '#nextjs__container_errors_desc a:nth-of-type(2)'
-                ) as any
-            ).href
-        )
-      ).toMatchSnapshot()
+              .shadowRoot.querySelector(
+                '#nextjs__container_errors_desc a:nth-of-type(1)'
+              ) as any
+          ).href
+      )
+    ).toMatchSnapshot()
+    expect(
+      await session.evaluate(
+        () =>
+          (
+            document
+              .querySelector('body > nextjs-portal')
+              .shadowRoot.querySelector(
+                '#nextjs__container_errors_desc a:nth-of-type(2)'
+              ) as any
+          ).href
+      )
+    ).toBe(null)
 
-      await cleanup()
-    })
+    await cleanup()
+  })
 
-    // TODO-APP: Catch errors that happen before useEffect
-    test.skip('non-Error errors are handled properly', async () => {
-      const { session, cleanup } = await sandbox(next)
+  // TODO-APP: Catch errors that happen before useEffect
+  test.skip('non-Error errors are handled properly', async () => {
+    const { session, cleanup } = await sandbox(next)
 
-      await session.patch(
-        'index.js',
-        `
+    await session.patch(
+      'index.js',
+      outdent`
         export default () => {
           throw {'a': 1, 'b': 'x'};
           return (
@@ -581,28 +588,28 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
-      )
+    )
 
-      expect(await session.hasRedbox(true)).toBe(true)
-      expect(await session.getRedboxDescription()).toMatchInlineSnapshot(
-        `"Error: {\\"a\\":1,\\"b\\":\\"x\\"}"`
-      )
+    await session.assertHasRedbox()
+    expect(await session.getRedboxDescription()).toEqual(
+      `Error: {"a":1,"b":"x"}`
+    )
 
-      // fix previous error
-      await session.patch(
-        'index.js',
-        `
+    // fix previous error
+    await session.patch(
+      'index.js',
+      outdent`
         export default () => {
           return (
             <div>hello</div>
           )
         }
       `
-      )
-      expect(await session.hasRedbox(false)).toBe(false)
-      await session.patch(
-        'index.js',
-        `
+    )
+    await session.assertNoRedbox()
+    await session.patch(
+      'index.js',
+      outdent`
         class Hello {}
 
         export default () => {
@@ -612,27 +619,27 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
-      )
-      expect(await session.hasRedbox(true)).toBe(true)
-      expect(await session.getRedboxDescription()).toContain(
-        `Error: class Hello {`
-      )
+    )
+    await session.assertHasRedbox()
+    expect(await session.getRedboxDescription()).toContain(
+      `Error: class Hello {`
+    )
 
-      // fix previous error
-      await session.patch(
-        'index.js',
-        `
+    // fix previous error
+    await session.patch(
+      'index.js',
+      outdent`
         export default () => {
           return (
             <div>hello</div>
           )
         }
       `
-      )
-      expect(await session.hasRedbox(false)).toBe(false)
-      await session.patch(
-        'index.js',
-        `
+    )
+    await session.assertNoRedbox()
+    await session.patch(
+      'index.js',
+      outdent`
         export default () => {
           throw "string error"
           return (
@@ -640,27 +647,25 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
-      )
-      expect(await session.hasRedbox(true)).toBe(true)
-      expect(await session.getRedboxDescription()).toMatchInlineSnapshot(
-        `"Error: string error"`
-      )
+    )
+    await session.assertHasRedbox()
+    expect(await session.getRedboxDescription()).toEqual(`Error: string error`)
 
-      // fix previous error
-      await session.patch(
-        'index.js',
-        `
+    // fix previous error
+    await session.patch(
+      'index.js',
+      outdent`
         export default () => {
           return (
             <div>hello</div>
           )
         }
       `
-      )
-      expect(await session.hasRedbox(false)).toBe(false)
-      await session.patch(
-        'index.js',
-        `
+    )
+    await session.assertNoRedbox()
+    await session.patch(
+      'index.js',
+      outdent`
         export default () => {
           throw null
           return (
@@ -668,218 +673,358 @@ for (const variant of ['default', 'turbo']) {
           )
         }
       `
-      )
-      expect(await session.hasRedbox(true)).toBe(true)
-      expect(await session.getRedboxDescription()).toContain(
-        `Error: A null error was thrown`
-      )
-
-      await cleanup()
-    })
-
-    test('Should not show __webpack_exports__ when exporting anonymous arrow function', async () => {
-      const { session, cleanup } = await sandbox(next)
-
-      await session.patch(
-        'index.js',
-        `
-       export default () => {
-        if (typeof window !== 'undefined') {
-          throw new Error('test')
-        }
-
-        return null
-       }
-
-      `
-      )
-
-      expect(await session.hasRedbox(true)).toBe(true)
-      expect(await session.getRedboxSource()).toMatchSnapshot()
-
-      await cleanup()
-    })
-
-    test('Unhandled errors and rejections opens up in the minimized state', async () => {
-      const { session, browser, cleanup } = await sandbox(next)
-
-      const file = `
-    export default function Index() {
-      //
-      setTimeout(() => {
-        throw new Error('Unhandled error')
-      }, 0)
-      setTimeout(() => {
-        Promise.reject(new Error('Undhandled rejection'))
-      }, 0)
-      return (
-        <>
-          <button
-            id="unhandled-error"
-            onClick={() => {
-              throw new Error('Unhandled error')
-            }}
-          >
-            Unhandled error
-          </button>
-          <button
-            id="unhandled-rejection"
-            onClick={() => {
-              Promise.reject(new Error('Undhandled rejection'))
-            }}
-          >
-            Unhandled rejection
-          </button>
-        </>
-      )
-    }
-    `
-
-      await session.patch('index.js', file)
-
-      // Unhandled error and rejection in setTimeout
-      expect(
-        await browser.waitForElementByCss('.nextjs-toast-errors').text()
-      ).toBe('2 errors')
-
-      // Unhandled error in event handler
-      await browser.elementById('unhandled-error').click()
-      await check(
-        () => browser.elementByCss('.nextjs-toast-errors').text(),
-        /3 errors/
-      )
-
-      // Unhandled rejection in event handler
-      await browser.elementById('unhandled-rejection').click()
-      await check(
-        () => browser.elementByCss('.nextjs-toast-errors').text(),
-        /4 errors/
-      )
-      expect(await session.hasRedbox(false)).toBe(false)
-
-      // Add Component error
-      await session.patch(
-        'index.js',
-        file.replace(
-          '//',
-          "if (typeof window !== 'undefined') throw new Error('Component error')"
-        )
-      )
-
-      // Render error should "win" and show up in fullscreen
-      expect(await session.hasRedbox(true)).toBe(true)
-
-      await cleanup()
-    })
-
-    test.each([['server'], ['client']])(
-      'Call stack count is correct for %s error',
-      async (pageType: string) => {
-        const fixture =
-          pageType === 'server'
-            ? new Map([
-                [
-                  'app/page.js',
-                  `
-        export default function Page() {
-          throw new Error('Server error')
-        }
-`,
-                ],
-              ])
-            : new Map([
-                [
-                  'app/page.js',
-                  `
-        'use client'
-        export default function Page() {
-          if (typeof window !== 'undefined') {
-            throw new Error('Client error')
-          }
-          return null
-        }
-`,
-                ],
-              ])
-
-        const { session, browser, cleanup } = await sandbox(next, fixture)
-
-        const getCallStackCount = async () =>
-          (await browser.elementsByCss('[data-nextjs-call-stack-frame]')).length
-
-        expect(await session.hasRedbox(true)).toBe(true)
-
-        // Open full Call Stack
-        await browser
-          .elementByCss('[data-nextjs-data-runtime-error-collapsed-action]')
-          .click()
-
-        // Expect more than the default amount of frames
-        // The default stackTraceLimit results in max 9 [data-nextjs-call-stack-frame] elements
-        expect(await getCallStackCount()).toBeGreaterThan(9)
-
-        await cleanup()
-      }
+    )
+    await session.assertHasRedbox()
+    expect(await session.getRedboxDescription()).toContain(
+      `Error: A null error was thrown`
     )
 
-    test('Server component errors should open up in fullscreen', async () => {
-      const { session, browser, cleanup } = await sandbox(
-        next,
-        new Map([
-          // Start with error
-          [
-            'app/page.js',
-            `
+    await cleanup()
+  })
+
+  test('Should not show __webpack_exports__ when exporting anonymous arrow function', async () => {
+    const { session, cleanup } = await sandbox(next)
+
+    await session.patch(
+      'index.js',
+      outdent`
+        export default () => {
+          if (typeof window !== 'undefined') {
+            throw new Error('test')
+          }
+
+          return null
+        }
+      `
+    )
+
+    await session.assertHasRedbox()
+    expect(await session.getRedboxSource()).toMatchSnapshot()
+
+    await cleanup()
+  })
+
+  test('Unhandled errors and rejections opens up in the minimized state', async () => {
+    const { session, browser, cleanup } = await sandbox(next)
+
+    const file = outdent`
+      export default function Index() {
+        //
+        setTimeout(() => {
+          throw new Error('Unhandled error')
+        }, 0)
+        setTimeout(() => {
+          Promise.reject(new Error('Undhandled rejection'))
+        }, 0)
+        return (
+          <>
+            <button
+              id="unhandled-error"
+              onClick={() => {
+                throw new Error('Unhandled error')
+              }}
+            >
+              Unhandled error
+            </button>
+            <button
+              id="unhandled-rejection"
+              onClick={() => {
+                Promise.reject(new Error('Undhandled rejection'))
+              }}
+            >
+              Unhandled rejection
+            </button>
+          </>
+        )
+      }
+    `
+
+    await session.patch('index.js', file)
+
+    // Unhandled error and rejection in setTimeout
+    expect(
+      await browser.waitForElementByCss('.nextjs-toast-errors').text()
+    ).toBe('2 errors')
+
+    // Unhandled error in event handler
+    await browser.elementById('unhandled-error').click()
+    await check(
+      () => browser.elementByCss('.nextjs-toast-errors').text(),
+      /3 errors/
+    )
+
+    // Unhandled rejection in event handler
+    await browser.elementById('unhandled-rejection').click()
+    await check(
+      () => browser.elementByCss('.nextjs-toast-errors').text(),
+      /4 errors/
+    )
+    await session.assertNoRedbox()
+
+    // Add Component error
+    await session.patch(
+      'index.js',
+      file.replace(
+        '//',
+        "if (typeof window !== 'undefined') throw new Error('Component error')"
+      )
+    )
+
+    // Render error should "win" and show up in fullscreen
+    await session.assertHasRedbox()
+
+    await cleanup()
+  })
+
+  test('Call stack for client error', async () => {
+    const { session, browser, cleanup } = await sandbox(
+      next,
+      new Map([
+        [
+          'app/page.js',
+          outdent`
+            'use client'
+            export default function Page() {
+              if (typeof window !== 'undefined') {
+                throw new Error('Client error')
+              }
+              return null
+            }
+          `,
+        ],
+      ])
+    )
+
+    try {
+      await session.assertHasRedbox()
+
+      // Should still show the errored line in source code
+      const source = await session.getRedboxSource()
+      expect(source).toContain('app/page.js')
+      expect(source).toContain(`throw new Error('Client error')`)
+
+      const stackFrameElements = await browser.elementsByCss(
+        '[data-nextjs-call-stack-frame]'
+      )
+      const stackFrames = (
+        await Promise.all(stackFrameElements.map((f) => f.innerText()))
+      ).filter(Boolean)
+      expect(stackFrames).toEqual([])
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('Call stack for server error', async () => {
+    const { session, browser, cleanup } = await sandbox(
+      next,
+      new Map([
+        [
+          'app/page.js',
+          outdent`
+      export default function Page() {
+        throw new Error('Server error')
+      }
+    `,
+        ],
+      ])
+    )
+
+    try {
+      await session.assertHasRedbox()
+
+      // Should still show the errored line in source code
+      const source = await session.getRedboxSource()
+      expect(source).toContain('app/page.js')
+      expect(source).toContain(`throw new Error('Server error')`)
+
+      const stackFrameElements = await browser.elementsByCss(
+        '[data-nextjs-call-stack-frame]'
+      )
+      const stackFrames = (
+        await Promise.all(stackFrameElements.map((f) => f.innerText()))
+      ).filter(Boolean)
+      expect(stackFrames).toEqual([])
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('should hide unrelated frames in stack trace with unknown anonymous calls', async () => {
+    const { session, browser, cleanup } = await sandbox(
+      next,
+      new Map([
+        [
+          'app/page.js',
+          outdent`
+          export default function Page() {
+            try {
+              (function() {
+                throw new Error("This is an error from an anonymous function");
+              })();
+            } catch (e) {
+              throw e
+            }
+          }
+        `,
+        ],
+      ])
+    )
+
+    try {
+      await session.assertHasRedbox()
+
+      // Should still show the errored line in source code
+      const source = await session.getRedboxSource()
+      expect(source).toContain('app/page.js')
+      expect(source).toContain(
+        `throw new Error("This is an error from an anonymous function")`
+      )
+
+      const stackFrameElements = await browser.elementsByCss(
+        '[data-nextjs-call-stack-frame]'
+      )
+      const stackFrames = await Promise.all(
+        stackFrameElements.map((f) => f.innerText())
+      )
+      expect(stackFrames).toEqual(
+        process.env.TURBOPACK
+          ? [
+              // TODO: Why is Turbopack off by one in the column?
+              outdent`
+                Page
+                app/page.js (5:6)
+              `,
+              // TODO: Show useful stack
+              // Internal frames of React.
+              // Feel free to adjust until we show useful stacks.
+              '',
+              '',
+              '',
+              '',
+            ]
+          : [
+              outdent`
+                Page
+                app/page.js (5:5)
+              `,
+              // TODO: Show useful stack
+              // Internal frames of React.
+              // Feel free to adjust until we show useful stacks.
+              '',
+              '',
+              '',
+              '',
+            ]
+      )
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('should hide unrelated frames in stack trace with nodejs internal calls', async () => {
+    const { session, browser, cleanup } = await sandbox(
+      next,
+      new Map([
+        [
+          'app/page.js',
+          // Node.js will throw an error about the invalid URL since this is a server component
+          outdent`
+          export default function Page() {
+            new URL("/", "invalid");
+          }`,
+        ],
+      ])
+    )
+
+    try {
+      await session.assertHasRedbox()
+
+      // Should still show the errored line in source code
+      const source = await session.getRedboxSource()
+      expect(source).toContain('app/page.js')
+      expect(source).toContain(`new URL("/", "invalid")`)
+
+      const stackFrameElements = await browser.elementsByCss(
+        '[data-nextjs-call-stack-frame]'
+      )
+      const stackFrames = await Promise.all(
+        stackFrameElements.map((f) => f.innerText())
+      )
+      expect(stackFrames).toEqual(
+        // TODO: Show useful stack
+        [
+          // Internal frames of React.
+          // Feel free to adjust until we show useful stacks.
+          '',
+          '',
+          '',
+          '',
+        ]
+      )
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('Server component errors should open up in fullscreen', async () => {
+    const { session, browser, cleanup } = await sandbox(
+      next,
+      new Map([
+        // Start with error
+        [
+          'app/page.js',
+          outdent`
+            export default function Page() {
+              throw new Error('Server component error')
+              return <p id="text">Hello world</p>
+            }
+          `,
+        ],
+      ])
+    )
+    await session.assertHasRedbox()
+
+    // Remove error
+    await session.patch(
+      'app/page.js',
+      outdent`
         export default function Page() {
-          throw new Error('Server component error')
           return <p id="text">Hello world</p>
         }
-        `,
-          ],
-        ])
-      )
-      expect(await session.hasRedbox(true)).toBe(true)
-
-      // Remove error
-      await session.patch(
-        'app/page.js',
-        `
-      export default function Page() {
-        return <p id="text">Hello world</p>
-      }
       `
-      )
-      expect(await browser.waitForElementByCss('#text').text()).toBe(
-        'Hello world'
-      )
-      expect(await session.hasRedbox(false)).toBe(false)
+    )
+    expect(await browser.waitForElementByCss('#text').text()).toBe(
+      'Hello world'
+    )
+    await session.assertNoRedbox()
 
-      // Re-add error
-      await session.patch(
-        'app/page.js',
-        `
-      export default function Page() {
-        throw new Error('Server component error!')
-        return <p id="text">Hello world</p>
-      }
+    // Re-add error
+    await session.patch(
+      'app/page.js',
+      outdent`
+        export default function Page() {
+          throw new Error('Server component error!')
+          return <p id="text">Hello world</p>
+        }
       `
-      )
+    )
 
-      expect(await session.hasRedbox(true)).toBe(true)
+    await session.assertHasRedbox()
 
-      await cleanup()
-    })
+    await cleanup()
+  })
 
-    test('Import trace when module not found in layout', async () => {
-      const { session, cleanup } = await sandbox(
-        next,
+  test('Import trace when module not found in layout', async () => {
+    const { session, cleanup } = await sandbox(
+      next,
 
-        new Map([['app/module.js', `import "non-existing-module"`]])
-      )
+      new Map([['app/module.js', `import "non-existing-module"`]])
+    )
 
-      await session.patch(
-        'app/layout.js',
-        `
+    await session.patch(
+      'app/layout.js',
+      outdent`
         import "./module"
 
         export default function RootLayout({ children }) {
@@ -890,28 +1035,27 @@ for (const variant of ['default', 'turbo']) {
             </html>
           )
         }
-        
-    `
-      )
+      `
+    )
 
-      expect(await session.hasRedbox(true)).toBe(true)
-      expect(await session.getRedboxSource()).toMatchSnapshot()
+    await session.assertHasRedbox()
+    expect(await session.getRedboxSource()).toMatchSnapshot()
 
-      await cleanup()
-    })
+    await cleanup()
+  })
 
-    test("Can't resolve @import in CSS file", async () => {
-      const { session, cleanup } = await sandbox(
-        next,
-        new Map([
-          ['app/styles1.css', '@import "./styles2.css"'],
-          ['app/styles2.css', '@import "./boom.css"'],
-        ])
-      )
+  test("Can't resolve @import in CSS file", async () => {
+    const { session, cleanup } = await sandbox(
+      next,
+      new Map([
+        ['app/styles1.css', '@import "./styles2.css"'],
+        ['app/styles2.css', '@import "./boom.css"'],
+      ])
+    )
 
-      await session.patch(
-        'app/layout.js',
-        `
+    await session.patch(
+      'app/layout.js',
+      outdent`
         import "./styles1.css"
 
         export default function RootLayout({ children }) {
@@ -922,31 +1066,213 @@ for (const variant of ['default', 'turbo']) {
             </html>
           )
         }
-        
-    `
-      )
+      `
+    )
 
-      expect(await session.hasRedbox(true)).toBe(true)
-      expect(await session.getRedboxSource()).toMatchSnapshot()
+    // Wait for patch to apply and new error to show.
+    await session.assertHasRedbox()
+    if (isTurbopack) {
+      await retry(async () => {
+        expect(await session.getRedboxSource()).toEqual(outdent`
+          ./app/styles2.css:1:2
+          Module not found: Can't resolve './boom.css'
+          > 1 | @import "./boom.css"
+              |  ^
+          
+          https://nextjs.org/docs/messages/module-not-found
+        `)
+      })
+    } else {
+      await retry(async () => {
+        expect(await session.getRedboxSource()).toEqual(outdent`
+          ./app/styles2.css
+          Module not found: Can't resolve './boom.css'
+          
+          https://nextjs.org/docs/messages/module-not-found
+          
+          Import trace for requested module:
+          ./app/styles1.css
+        `)
+      })
+    }
+
+    await cleanup()
+  })
+
+  // TODO: The error overlay is not closed when restoring the working code.
+  for (const type of ['server' /* , 'client' */]) {
+    test(`${type} component can recover from error thrown in the module`, async () => {
+      const { session, cleanup } = await sandbox(next, undefined, '/' + type)
+
+      await next.patchFile('index.js', "throw new Error('module error')")
+      await session.assertHasRedbox()
+      await next.patchFile(
+        'index.js',
+        'export default function Page() {return <p>hello world</p>}'
+      )
+      await session.assertNoRedbox()
 
       await cleanup()
     })
+  }
 
-    test.each([['server'], ['client']])(
-      '%s component can recover from error thrown in the module',
-      async (type: string) => {
-        const { session, cleanup } = await sandbox(next, undefined, '/' + type)
+  test('Should show error location for server actions in client component', async () => {
+    const { session, browser, cleanup } = await sandbox(
+      next,
+      new Map([
+        [
+          'app/actions.ts',
+          `"use server";
 
-        await next.patchFile('index.js', "throw new Error('module error')")
-        expect(await session.hasRedbox(true)).toBe(true)
-        await next.patchFile(
-          'index.js',
-          'export default function Page() {return <p>hello world</p>}'
-        )
-        expect(await session.hasRedbox(false)).toBe(false)
+export async function serverAction(a) {
+  throw new Error("server action was here");
+}`,
+        ],
+        [
+          'app/page.js',
+          `"use client";
+import { serverAction } from "./actions";
 
-        await cleanup()
-      }
+export default function Home() {
+  return (
+    <>
+      <form action={serverAction}>
+        <button id="trigger-action">Submit</button>
+      </form>
+    </>
+  );
+}`,
+        ],
+      ])
     )
+
+    await browser.elementByCss('#trigger-action').click()
+
+    // Wait for patch to apply and new error to show.
+    await session.assertHasRedbox()
+    await retry(async () => {
+      expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
+        "app/actions.ts (4:9) @ serverAction
+
+          2 |
+          3 | export async function serverAction(a) {
+        > 4 |   throw new Error("server action was here");
+            |         ^
+          5 | }"
+      `)
+    })
+
+    await cleanup()
   })
-}
+
+  test('Should show error location for server actions in server component', async () => {
+    const { session, browser, cleanup } = await sandbox(
+      next,
+      new Map([
+        [
+          'app/actions.ts',
+          `"use server";
+
+export async function serverAction(a) {
+  throw new Error("server action was here");
+}`,
+        ],
+        [
+          'app/page.js',
+          `import { serverAction } from "./actions";
+
+export default function Home() {
+  return (
+    <>
+      <form action={serverAction}>
+        <button id="trigger-action">Submit</button>
+      </form>
+    </>
+  );
+}`,
+        ],
+      ])
+    )
+
+    await browser.elementByCss('#trigger-action').click()
+
+    // Wait for patch to apply and new error to show.
+    await session.assertHasRedbox()
+    await retry(async () => {
+      expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
+        "app/actions.ts (4:9) @ serverAction
+
+          2 |
+          3 | export async function serverAction(a) {
+        > 4 |   throw new Error("server action was here");
+            |         ^
+          5 | }"
+      `)
+    })
+
+    await cleanup()
+  })
+
+  test('Should collapse bundler internal stack frames', async () => {
+    const { session, browser, cleanup } = await sandbox(
+      next,
+      new Map([
+        [
+          'app/utils.ts',
+          `throw new Error('utils error')
+export function foo(){}
+          `,
+        ],
+        [
+          'app/page.js',
+          `"use client";
+import { foo } from "./utils";
+
+export default function Home() {
+  foo();
+  return "hello";
+}`,
+        ],
+      ])
+    )
+
+    await session.assertHasRedbox()
+
+    let stack = next.normalizeTestDirContent(
+      await getRedboxCallStackCollapsed(browser)
+    )
+    if (isTurbopack) {
+      expect(stack).toMatchInlineSnapshot(`
+        "app/utils.ts (1:7) @ [project]/app/utils.ts [app-client] (ecmascript)
+        ---
+        Next.js
+        ---
+        [project]/app/page.js [app-client] (ecmascript)
+        app/page.js (2:1)
+        ---
+        Next.js
+        ---
+        React"
+      `)
+    } else {
+      expect(stack).toMatchInlineSnapshot(`
+        "app/utils.ts (1:7) @ eval
+        ---
+        ./app/utils.ts
+        file://TEST_DIR/.next/static/chunks/app/page.js (39:1)
+        ---
+        Next.js
+        ---
+        eval
+        ./app/page.js
+        ---
+        ./app/page.js
+        file://TEST_DIR/.next/static/chunks/app/page.js (28:1)
+        ---
+        Next.js"
+      `)
+    }
+
+    await cleanup()
+  })
+})

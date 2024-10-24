@@ -1,5 +1,5 @@
 import { createNext, FileRef } from 'e2e-utils'
-import { NextInstance } from 'test/lib/next-modes/base'
+import { NextInstance } from 'e2e-utils'
 import { fetchViaHTTP, renderViaHTTP } from 'next-test-utils'
 import fs from 'fs-extra'
 import { join } from 'path'
@@ -10,9 +10,6 @@ describe('og-api', () => {
   beforeAll(async () => {
     next = await createNext({
       files: new FileRef(join(__dirname, 'app')),
-      dependencies: {
-        '@vercel/og': 'latest',
-      },
     })
   })
   afterAll(() => next.destroy())
@@ -40,6 +37,14 @@ describe('og-api', () => {
 
   it('should work in app route in node runtime', async () => {
     const res = await fetchViaHTTP(next.url, '/og-node')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('image/png')
+    const body = await res.blob()
+    expect(body.size).toBeGreaterThan(0)
+  })
+
+  it('should work in middleware', async () => {
+    const res = await fetchViaHTTP(next.url, '/middleware')
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('image/png')
     const body = await res.blob()

@@ -1,17 +1,17 @@
-'use client'
+"use client";
 
-import { usePathname } from 'next/navigation'
-import Link from 'next/link'
-import { i18n } from '../../../i18n-config'
+import { usePathname } from "next/navigation";
+import Link from "next/link";
+import { i18n, type Locale } from "../../../i18n-config";
 
 export default function LocaleSwitcher() {
-  const pathName = usePathname()
-  const redirectedPathName = (locale: string) => {
-    if (!pathName) return '/'
-    const segments = pathName.split('/')
-    segments[1] = locale
-    return segments.join('/')
-  }
+  const pathname = usePathname();
+  const redirectedPathname = (locale: Locale) => {
+    if (!pathname) return "/";
+    const segments = pathname.split("/");
+    segments[1] = locale;
+    return segments.join("/");
+  };
 
   return (
     <div>
@@ -20,11 +20,11 @@ export default function LocaleSwitcher() {
         {i18n.locales.map((locale) => {
           return (
             <li key={locale}>
-              <Link href={redirectedPathName(locale)}>{locale}</Link>
+              <Link href={redirectedPathname(locale)}>{locale}</Link>
             </li>
-          )
+          );
         })}
       </ul>
     </div>
-  )
+  );
 }

@@ -6,12 +6,13 @@ import fs from 'fs-extra'
 import webdriver from 'next-webdriver'
 import globOrig from 'glob'
 import {
+  assertHasRedbox,
   check,
   fetchViaHTTP,
   File,
   findPort,
   getRedboxHeader,
-  hasRedbox,
+  getRedboxSource,
   killApp,
   launchApp,
   nextBuild,
@@ -27,11 +28,19 @@ export const nextConfig = new File(join(appDir, 'next.config.js'))
 const slugPage = new File(join(appDir, 'app/another/[slug]/page.js'))
 const apiJson = new File(join(appDir, 'app/api/json/route.js'))
 
-export const expectedFiles = [
+export const expectedWhenTrailingSlashTrue = [
   '404.html',
   '404/index.html',
-  '_next/static/media/test.3f1a293b.png',
+  // Turbopack and plain next.js have different hash output for the file name
+  // Turbopack will output favicon in the _next/static/media folder
+  ...(process.env.TURBOPACK
+    ? [expect.stringMatching(/_next\/static\/media\/favicon\.[0-9a-f]+\.ico/)]
+    : []),
+  expect.stringMatching(/_next\/static\/media\/test\.[0-9a-f]+\.png/),
   '_next/static/test-build-id/_buildManifest.js',
+  ...(process.env.TURBOPACK
+    ? ['_next/static/test-build-id/_clientMiddlewareManifest.json']
+    : []),
   '_next/static/test-build-id/_ssgManifest.js',
   'another/first/index.html',
   'another/first/index.txt',
@@ -41,9 +50,41 @@ export const expectedFiles = [
   'another/second/index.txt',
   'api/json',
   'api/txt',
+  'client/index.html',
+  'client/index.txt',
   'favicon.ico',
   'image-import/index.html',
   'image-import/index.txt',
+  'index.html',
+  'index.txt',
+  'robots.txt',
+]
+
+const expectedWhenTrailingSlashFalse = [
+  '404.html',
+  // Turbopack will output favicon in the _next/static/media folder
+  ...(process.env.TURBOPACK
+    ? [expect.stringMatching(/_next\/static\/media\/favicon\.[0-9a-f]+\.ico/)]
+    : []),
+  expect.stringMatching(/_next\/static\/media\/test\.[0-9a-f]+\.png/),
+  '_next/static/test-build-id/_buildManifest.js',
+  ...(process.env.TURBOPACK
+    ? ['_next/static/test-build-id/_clientMiddlewareManifest.json']
+    : []),
+  '_next/static/test-build-id/_ssgManifest.js',
+  'another.html',
+  'another.txt',
+  'another/first.html',
+  'another/first.txt',
+  'another/second.html',
+  'another/second.txt',
+  'api/json',
+  'api/txt',
+  'client.html',
+  'client.txt',
+  'favicon.ico',
+  'image-import.html',
+  'image-import.txt',
   'index.html',
   'index.txt',
   'robots.txt',
@@ -65,32 +106,47 @@ export async function runTests({
   isDev = false,
   trailingSlash = true,
   dynamicPage,
+  dynamicParams,
   dynamicApiRoute,
+  generateStaticParamsOpt,
   expectedErrMsg,
 }: {
   isDev?: boolean
   trailingSlash?: boolean
   dynamicPage?: string
+  dynamicParams?: string
   dynamicApiRoute?: string
+  generateStaticParamsOpt?: 'set noop' | 'set client'
   expectedErrMsg?: string
 }) {
-  if (trailingSlash) {
+  if (trailingSlash !== undefined) {
     nextConfig.replace(
       'trailingSlash: true,',
       `trailingSlash: ${trailingSlash},`
     )
   }
-  if (dynamicPage) {
+  if (dynamicPage !== undefined) {
     slugPage.replace(
       `const dynamic = 'force-static'`,
       `const dynamic = ${dynamicPage}`
     )
   }
-  if (dynamicApiRoute) {
+
+  if (dynamicApiRoute !== undefined) {
     apiJson.replace(
       `const dynamic = 'force-static'`,
       `const dynamic = ${dynamicApiRoute}`
     )
+  }
+
+  if (dynamicParams !== undefined) {
+    slugPage.prepend(`export const dynamicParams = ${dynamicParams}\n`)
+  }
+
+  if (generateStaticParamsOpt === 'set noop') {
+    slugPage.replace('export function generateStaticParams', 'function noop')
+  } else if (generateStaticParamsOpt === 'set client') {
+    slugPage.prepend('"use client"\n')
   }
   await fs.remove(distDir)
   await fs.remove(exportDir)
@@ -120,8 +176,10 @@ export async function runTests({
       if (isDev) {
         const url = dynamicPage ? '/another/first' : '/api/json'
         const browser = await webdriver(port, url)
-        expect(await hasRedbox(browser, true)).toBe(true)
-        expect(await getRedboxHeader(browser)).toContain(expectedErrMsg)
+        await assertHasRedbox(browser)
+        const header = await getRedboxHeader(browser)
+        const source = await getRedboxSource(browser)
+        expect(`${header}\n${source}`).toContain(expectedErrMsg)
       } else {
         await check(() => result.stderr, /error/i)
       }
@@ -156,7 +214,6 @@ export async function runTests({
       await check(() => browser.elementByCss('h1').text(), 'Home')
       expect(await browser.elementByCss(a(3)).text()).toBe('another first page')
       await browser.elementByCss(a(3)).click()
-
       await check(() => browser.elementByCss('h1').text(), 'first')
       expect(await browser.elementByCss(a(1)).text()).toBe('Visit another page')
       await browser.elementByCss(a(1)).click()
@@ -177,8 +234,8 @@ export async function runTests({
 
       await check(() => browser.elementByCss('h1').text(), 'Image Import')
       expect(await browser.elementByCss(a(2)).text()).toBe('View the image')
-      expect(await browser.elementByCss(a(2)).getAttribute('href')).toContain(
-        '/test.3f1a293b.png'
+      expect(await browser.elementByCss(a(2)).getAttribute('href')).toMatch(
+        /\/test\.(.*)\.png/
       )
       const res1 = await fetchViaHTTP(port, '/api/json')
       expect(res1.status).toBe(200)
@@ -188,8 +245,14 @@ export async function runTests({
       expect(res2.status).toBe(200)
       expect(await res2.text()).toEqual('this is plain text')
 
-      if (!isDev && trailingSlash) {
-        expect(await getFiles()).toEqual(expectedFiles)
+      if (!isDev) {
+        if (trailingSlash) {
+          expect(await getFiles()).toEqual(expectedWhenTrailingSlashTrue)
+        } else {
+          expect(await getFiles()).toEqual(expectedWhenTrailingSlashFalse)
+        }
+        const html404 = await fs.readFile(join(exportDir, '404.html'), 'utf8')
+        expect(html404).toContain('<h1>My custom not found page</h1>')
       }
     }
   } finally {

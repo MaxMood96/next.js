@@ -7,22 +7,28 @@ import React, {
   useContext,
   useMemo,
   useState,
+  type JSX,
 } from 'react'
+import * as ReactDOM from 'react-dom'
 import Head from '../../shared/lib/head'
 import {
-  ImageConfigComplete,
   imageConfigDefault,
-  LoaderValue,
   VALID_LOADERS,
 } from '../../shared/lib/image-config'
+import type {
+  ImageConfigComplete,
+  LoaderValue,
+} from '../../shared/lib/image-config'
 import { useIntersection } from '../use-intersection'
-import { ImageConfigContext } from '../../shared/lib/image-config-context'
+import { ImageConfigContext } from '../../shared/lib/image-config-context.shared-runtime'
 import { warnOnce } from '../../shared/lib/utils/warn-once'
 import { normalizePathTrailingSlash } from '../normalize-trailing-slash'
 
 function normalizeSrc(src: string): string {
   return src[0] === '/' ? src.slice(1) : src
 }
+
+const supportsFloat = typeof ReactDOM.preload === 'function'
 
 const configEnv = process.env.__NEXT_IMAGE_OPTS as any as ImageConfigComplete
 const loadedImageURLs = new Set<string>()
@@ -39,7 +45,7 @@ if (typeof window === 'undefined') {
 }
 
 const VALID_LOADING_VALUES = ['lazy', 'eager', undefined] as const
-type LoadingValue = typeof VALID_LOADING_VALUES[number]
+type LoadingValue = (typeof VALID_LOADING_VALUES)[number]
 type ImageConfig = ImageConfigComplete & { allSizes: number[] }
 export type ImageLoader = (resolverProps: ImageLoaderProps) => string
 
@@ -137,6 +143,25 @@ function defaultLoader({
       )
     }
 
+    if (src.startsWith('/') && config.localPatterns) {
+      if (
+        process.env.NODE_ENV !== 'test' &&
+        // micromatch isn't compatible with edge runtime
+        process.env.NEXT_RUNTIME !== 'edge'
+      ) {
+        // We use dynamic require because this should only error in development
+        const {
+          hasLocalMatch,
+        } = require('../../shared/lib/match-local-pattern')
+        if (!hasLocalMatch(config.localPatterns, src)) {
+          throw new Error(
+            `Invalid src prop (${src}) on \`next/image\` does not match \`images.localPatterns\` configured in your \`next.config.js\`\n` +
+              `See more info: https://nextjs.org/docs/messages/next-image-unconfigured-localpatterns`
+          )
+        }
+      }
+    }
+
     if (!src.startsWith('/') && (config.domains || config.remotePatterns)) {
       let parsedSrc: URL
       try {
@@ -154,8 +179,10 @@ function defaultLoader({
         process.env.NEXT_RUNTIME !== 'edge'
       ) {
         // We use dynamic require because this should only error in development
-        const { hasMatch } = require('../../shared/lib/match-remote-pattern')
-        if (!hasMatch(config.domains, config.remotePatterns, parsedSrc)) {
+        const {
+          hasRemoteMatch,
+        } = require('../../shared/lib/match-remote-pattern')
+        if (!hasRemoteMatch(config.domains, config.remotePatterns, parsedSrc)) {
           throw new Error(
             `Invalid src prop (${src}) on \`next/image\`, hostname "${parsedSrc.hostname}" is not configured under images in your \`next.config.js\`\n` +
               `See more info: https://nextjs.org/docs/messages/next-image-unconfigured-host`
@@ -194,7 +221,7 @@ const VALID_LAYOUT_VALUES = [
   'responsive',
   undefined,
 ] as const
-type LayoutValue = typeof VALID_LAYOUT_VALUES[number]
+type LayoutValue = (typeof VALID_LAYOUT_VALUES)[number]
 
 type PlaceholderValue = 'blur' | 'empty'
 
@@ -256,7 +283,7 @@ export type ImageProps = Omit<
   quality?: SafeNumber
   priority?: boolean
   loading?: LoadingValue
-  lazyRoot?: React.RefObject<HTMLElement> | null
+  lazyRoot?: React.RefObject<HTMLElement | null> | null
   lazyBoundary?: string
   placeholder?: PlaceholderValue
   blurDataURL?: string
@@ -672,7 +699,7 @@ export default function Image({
   let isLazy =
     !priority && (loading === 'lazy' || typeof loading === 'undefined')
   if (src.startsWith('data:') || src.startsWith('blob:')) {
-    // https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/Data_URIs
+    // https://developer.mozilla.org/docs/Web/HTTP/Basics_of_HTTP/Data_URIs
     unoptimized = true
     isLazy = false
   }
@@ -807,7 +834,7 @@ export default function Image({
             - Add a "blurDataURL" property, the contents should be a small Data URL to represent the image
             - Change the "src" property to a static import with one of the supported file types: ${VALID_BLUR_EXT.join(
               ','
-            )}
+            )} (animated images not supported)
             - Remove the "placeholder" property, effectively no blur effect
           Read more: https://nextjs.org/docs/messages/placeholder-blur-data-url`
           )
@@ -976,15 +1003,19 @@ export default function Image({
     }
   }
 
-  const linkProps: React.DetailedHTMLProps<
-    React.LinkHTMLAttributes<HTMLLinkElement>,
-    HTMLLinkElement
-  > = {
-    imageSrcSet: imgAttributes.srcSet,
-    imageSizes: imgAttributes.sizes,
-    crossOrigin: rest.crossOrigin,
-    referrerPolicy: rest.referrerPolicy,
-  }
+  const linkProps:
+    | React.DetailedHTMLProps<
+        React.LinkHTMLAttributes<HTMLLinkElement>,
+        HTMLLinkElement
+      >
+    | undefined = supportsFloat
+    ? undefined
+    : {
+        imageSrcSet: imgAttributes.srcSet,
+        imageSizes: imgAttributes.sizes,
+        crossOrigin: rest.crossOrigin,
+        referrerPolicy: rest.referrerPolicy,
+      }
 
   const useLayoutEffect =
     typeof window === 'undefined' ? React.useEffect : React.useLayoutEffect
@@ -1027,34 +1058,32 @@ export default function Image({
   }
   return (
     <>
-      {
-        <span style={wrapperStyle}>
-          {hasSizer ? (
-            <span style={sizerStyle}>
-              {sizerSvgUrl ? (
-                <img
-                  style={{
-                    display: 'block',
-                    maxWidth: '100%',
-                    width: 'initial',
-                    height: 'initial',
-                    background: 'none',
-                    opacity: 1,
-                    border: 0,
-                    margin: 0,
-                    padding: 0,
-                  }}
-                  alt=""
-                  aria-hidden={true}
-                  src={sizerSvgUrl}
-                />
-              ) : null}
-            </span>
-          ) : null}
-          <ImageElement {...imgElementArgs} />
-        </span>
-      }
-      {priority ? (
+      <span style={wrapperStyle}>
+        {hasSizer ? (
+          <span style={sizerStyle}>
+            {sizerSvgUrl ? (
+              <img
+                style={{
+                  display: 'block',
+                  maxWidth: '100%',
+                  width: 'initial',
+                  height: 'initial',
+                  background: 'none',
+                  opacity: 1,
+                  border: 0,
+                  margin: 0,
+                  padding: 0,
+                }}
+                alt=""
+                aria-hidden={true}
+                src={sizerSvgUrl}
+              />
+            ) : null}
+          </span>
+        ) : null}
+        <ImageElement {...imgElementArgs} />
+      </span>
+      {!supportsFloat && priority ? (
         // Note how we omit the `href` attribute, as it would only be relevant
         // for browsers that do not support `imagesrcset`, and in those cases
         // it would likely cause the incorrect image to be preloaded.

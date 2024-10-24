@@ -3,23 +3,17 @@ import { traceGlobals } from '../shared'
 import fs from 'fs'
 import path from 'path'
 import { PHASE_DEVELOPMENT_SERVER } from '../../shared/lib/constants'
+import type { TraceEvent } from '../types'
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const localEndpoint = {
   serviceName: 'nextjs',
   ipv4: '127.0.0.1',
   port: 9411,
 }
 
-type Event = {
-  traceId: string
-  parentId?: number
-  name: string
-  id: number
-  timestamp: number
-  duration: number
+type Event = TraceEvent & {
   localEndpoint?: typeof localEndpoint
-  tags?: Object
-  startTime?: number
 }
 
 // Batch events as zipkin allows for multiple events to be sent in one go
@@ -116,15 +110,7 @@ class RotatingWriteStream {
   }
 }
 
-const reportToLocalHost = (
-  name: string,
-  duration: number,
-  timestamp: number,
-  id: number,
-  parentId?: number,
-  attrs?: Object,
-  startTime?: number
-) => {
+const reportToLocalHost = (event: TraceEvent) => {
   const distDir = traceGlobals.get('distDir')
   const phase = traceGlobals.get('phase')
   if (!distDir || !phase) {
@@ -136,7 +122,7 @@ const reportToLocalHost = (
   }
 
   if (!batch) {
-    batch = batcher(async (events) => {
+    batch = batcher(async (events: Event[]) => {
       if (!writeStream) {
         await fs.promises.mkdir(distDir, { recursive: true })
         const file = path.join(distDir, 'trace')
@@ -156,25 +142,19 @@ const reportToLocalHost = (
   }
 
   batch.report({
+    ...event,
     traceId,
-    parentId,
-    name,
-    id,
-    timestamp,
-    duration,
-    tags: attrs,
-    startTime,
   })
 }
 
 export default {
-  flushAll: () =>
+  flushAll: (opts?: { end: boolean }) =>
     batch
       ? batch.flushAll().then(() => {
           const phase = traceGlobals.get('phase')
           // Only end writeStream when manually flushing in production
-          if (phase !== PHASE_DEVELOPMENT_SERVER) {
-            writeStream.end()
+          if (opts?.end || phase !== PHASE_DEVELOPMENT_SERVER) {
+            return writeStream.end()
           }
         })
       : undefined,

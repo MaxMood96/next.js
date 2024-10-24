@@ -1,12 +1,11 @@
 // This file should be imported before any others. It sets up the environment
 // for later imports to work properly.
 
-// expose AsyncLocalStorage on global for react usage if it isn't already provided by the environment
-if (typeof (globalThis as any).AsyncLocalStorage !== 'function') {
-  const { AsyncLocalStorage } = require('async_hooks')
-  ;(globalThis as any).AsyncLocalStorage = AsyncLocalStorage
-}
+// Import before anything else so that unexpected errors in other extensions are properly formatted.
+import './node-environment-extensions/error-inspect'
 
-if (typeof (globalThis as any).WebSocket !== 'function') {
-  ;(globalThis as any).WebSocket = require('next/dist/compiled/ws').WebSocket
-}
+import './node-environment-baseline'
+import './node-environment-extensions/random'
+import './node-environment-extensions/date'
+import './node-environment-extensions/web-crypto'
+import './node-environment-extensions/node-crypto'

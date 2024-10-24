@@ -1,17 +1,27 @@
-import type { Metadata, ResolvedMetadata } from '../types/metadata-interface'
+import type { ResolvedMetadata } from '../types/metadata-interface'
 import type {
   OpenGraphType,
   OpenGraph,
   ResolvedOpenGraph,
 } from '../types/opengraph-types'
-import type { FieldResolverWithMetadataBase } from '../types/resolvers'
+import type {
+  FieldResolverExtraArgs,
+  MetadataContext,
+} from '../types/resolvers'
 import type { ResolvedTwitterMetadata, Twitter } from '../types/twitter-types'
-import { resolveAsArrayOrUndefined } from '../generate/utils'
+import { resolveArray, resolveAsArrayOrUndefined } from '../generate/utils'
 import {
   getSocialImageFallbackMetadataBase,
   isStringOrURL,
   resolveUrl,
+  resolveAbsoluteUrlWithPathname,
 } from './resolve-url'
+import { resolveTitle } from './resolve-title'
+import { isFullStringUrl } from '../../url'
+import { warnOnce } from '../../../build/output/log'
+
+type FlattenArray<T> = T extends (infer U)[] ? U : T
+type ResolvedMetadataBase = ResolvedMetadata['metadataBase']
 
 const OgTypeFields = {
   article: ['authors', 'tags'],
@@ -29,86 +39,151 @@ const OgTypeFields = {
   ],
 } as const
 
+function resolveAndValidateImage(
+  item: FlattenArray<OpenGraph['images'] | Twitter['images']>,
+  metadataBase: NonNullable<ResolvedMetadataBase>,
+  isMetadataBaseMissing: boolean,
+  isStandaloneMode: boolean
+) {
+  if (!item) return undefined
+  const isItemUrl = isStringOrURL(item)
+  const inputUrl = isItemUrl ? item : item.url
+  if (!inputUrl) return undefined
+
+  // process.env.VERCEL is set to "1" when System Environment Variables are
+  // exposed. When exposed, validation is not necessary since we are falling back to
+  // process.env.VERCEL_PROJECT_PRODUCTION_URL, process.env.VERCEL_BRANCH_URL, or
+  // process.env.VERCEL_URL for the `metadataBase`. process.env.VERCEL is undefined
+  // when System Environment Variables are not exposed. When not exposed, we cannot
+  // detect in the build environment if the deployment is a Vercel deployment or not.
+  //
+  // x-ref: https://vercel.com/docs/projects/environment-variables/system-environment-variables#system-environment-variables
+  const isNonVercelDeployment =
+    !process.env.VERCEL && process.env.NODE_ENV === 'production'
+  // Validate url in self-host standalone mode or non-Vercel deployment
+  if (isStandaloneMode || isNonVercelDeployment) {
+    validateResolvedImageUrl(inputUrl, metadataBase, isMetadataBaseMissing)
+  }
+
+  return isItemUrl
+    ? {
+        url: resolveUrl(inputUrl, metadataBase),
+      }
+    : {
+        ...item,
+        // Update image descriptor url
+        url: resolveUrl(inputUrl, metadataBase),
+      }
+}
+
 export function resolveImages(
   images: Twitter['images'],
-  metadataBase: ResolvedMetadata['metadataBase']
+  metadataBase: ResolvedMetadataBase,
+  isStandaloneMode: boolean
 ): NonNullable<ResolvedMetadata['twitter']>['images']
 export function resolveImages(
   images: OpenGraph['images'],
-  metadataBase: ResolvedMetadata['metadataBase']
+  metadataBase: ResolvedMetadataBase,
+  isStandaloneMode: boolean
 ): NonNullable<ResolvedMetadata['openGraph']>['images']
 export function resolveImages(
   images: OpenGraph['images'] | Twitter['images'],
-  metadataBase: ResolvedMetadata['metadataBase']
+  metadataBase: ResolvedMetadataBase,
+  isStandaloneMode: boolean
 ):
   | NonNullable<ResolvedMetadata['twitter']>['images']
   | NonNullable<ResolvedMetadata['openGraph']>['images'] {
-  return resolveAsArrayOrUndefined(images)?.map((item) => {
-    if (isStringOrURL(item)) {
-      return {
-        url: resolveUrl(item, metadataBase)!,
-      }
-    } else {
-      return {
-        ...item,
-        // Update image descriptor url
-        url: resolveUrl(item.url, metadataBase)!,
-      }
-    }
-  })
+  const resolvedImages = resolveAsArrayOrUndefined(images)
+  if (!resolvedImages) return resolvedImages
+
+  const { isMetadataBaseMissing, fallbackMetadataBase } =
+    getSocialImageFallbackMetadataBase(metadataBase)
+  const nonNullableImages = []
+  for (const item of resolvedImages) {
+    const resolvedItem = resolveAndValidateImage(
+      item,
+      fallbackMetadataBase,
+      isMetadataBaseMissing,
+      isStandaloneMode
+    )
+    if (!resolvedItem) continue
+
+    nonNullableImages.push(resolvedItem)
+  }
+
+  return nonNullableImages
+}
+
+const ogTypeToFields: Record<string, readonly string[]> = {
+  article: OgTypeFields.article,
+  book: OgTypeFields.article,
+  'music.song': OgTypeFields.song,
+  'music.album': OgTypeFields.song,
+  'music.playlist': OgTypeFields.playlist,
+  'music.radio_station': OgTypeFields.radio,
+  'video.movie': OgTypeFields.video,
+  'video.episode': OgTypeFields.video,
 }
 
 function getFieldsByOgType(ogType: OpenGraphType | undefined) {
-  switch (ogType) {
-    case 'article':
-    case 'book':
-      return OgTypeFields.article
-    case 'music.song':
-    case 'music.album':
-      return OgTypeFields.song
-    case 'music.playlist':
-      return OgTypeFields.playlist
-    case 'music.radio_station':
-      return OgTypeFields.radio
-    case 'video.movie':
-    case 'video.episode':
-      return OgTypeFields.video
-    default:
-      return OgTypeFields.basic
+  if (!ogType || !(ogType in ogTypeToFields)) return OgTypeFields.basic
+  return ogTypeToFields[ogType].concat(OgTypeFields.basic)
+}
+
+function validateResolvedImageUrl(
+  inputUrl: string | URL,
+  fallbackMetadataBase: NonNullable<ResolvedMetadataBase>,
+  isMetadataBaseMissing: boolean
+): void {
+  // Only warn on the image url that needs to be resolved with metadataBase
+  if (
+    typeof inputUrl === 'string' &&
+    !isFullStringUrl(inputUrl) &&
+    isMetadataBaseMissing
+  ) {
+    warnOnce(
+      `metadataBase property in metadata export is not set for resolving social open graph or twitter images, using "${fallbackMetadataBase.origin}". See https://nextjs.org/docs/app/api-reference/functions/generate-metadata#metadatabase`
+    )
   }
 }
 
-export const resolveOpenGraph: FieldResolverWithMetadataBase<'openGraph'> = (
-  openGraph: Metadata['openGraph'],
-  metadataBase: ResolvedMetadata['metadataBase']
-) => {
+export const resolveOpenGraph: FieldResolverExtraArgs<
+  'openGraph',
+  [ResolvedMetadataBase, MetadataContext, string | null]
+> = (openGraph, metadataBase, metadataContext, titleTemplate) => {
   if (!openGraph) return null
 
-  const url = resolveUrl(openGraph.url, metadataBase)
-  const resolved = { ...openGraph } as ResolvedOpenGraph
-
-  function assignProps(og: OpenGraph) {
+  function resolveProps(target: ResolvedOpenGraph, og: OpenGraph) {
     const ogType = og && 'type' in og ? og.type : undefined
     const keys = getFieldsByOgType(ogType)
     for (const k of keys) {
       const key = k as keyof ResolvedOpenGraph
       if (key in og && key !== 'url') {
         const value = og[key]
-        if (value) {
-          const arrayValue = resolveAsArrayOrUndefined(value)
-          /// TODO: improve typing inferring
-          ;(resolved as any)[key] = arrayValue
-        }
+        // TODO: improve typing inferring
+        ;(target as any)[key] = value ? resolveArray(value) : null
       }
     }
-
-    const imageMetadataBase = getSocialImageFallbackMetadataBase(metadataBase)
-    resolved.images = resolveImages(og.images, imageMetadataBase)
+    target.images = resolveImages(
+      og.images,
+      metadataBase,
+      metadataContext.isStandaloneMode
+    )
   }
 
-  assignProps(openGraph)
+  const resolved = {
+    ...openGraph,
+    title: resolveTitle(openGraph.title, titleTemplate),
+  } as ResolvedOpenGraph
+  resolveProps(resolved, openGraph)
 
-  resolved.url = url
+  resolved.url = openGraph.url
+    ? resolveAbsoluteUrlWithPathname(
+        openGraph.url,
+        metadataBase,
+        metadataContext
+      )
+    : null
 
   return resolved
 }
@@ -121,20 +196,28 @@ const TwitterBasicInfoKeys = [
   'description',
 ] as const
 
-export const resolveTwitter: FieldResolverWithMetadataBase<'twitter'> = (
-  twitter,
-  metadataBase
-) => {
+export const resolveTwitter: FieldResolverExtraArgs<
+  'twitter',
+  [ResolvedMetadataBase, MetadataContext, string | null]
+> = (twitter, metadataBase, metadataContext, titleTemplate) => {
   if (!twitter) return null
+  let card = 'card' in twitter ? twitter.card : undefined
   const resolved = {
     ...twitter,
-    card: 'card' in twitter ? twitter.card : 'summary',
+    title: resolveTitle(twitter.title, titleTemplate),
   } as ResolvedTwitterMetadata
   for (const infoKey of TwitterBasicInfoKeys) {
     resolved[infoKey] = twitter[infoKey] || null
   }
-  const imageMetadataBase = getSocialImageFallbackMetadataBase(metadataBase)
-  resolved.images = resolveImages(twitter.images, imageMetadataBase)
+
+  resolved.images = resolveImages(
+    twitter.images,
+    metadataBase,
+    metadataContext.isStandaloneMode
+  )
+
+  card = card || (resolved.images?.length ? 'summary_large_image' : 'summary')
+  resolved.card = card
 
   if ('card' in resolved) {
     switch (resolved.card) {

@@ -2,7 +2,38 @@ import type webpack from 'webpack'
 import fs from 'fs'
 import path from 'path'
 import { imageExtMimeTypeMap } from '../../../lib/mime-type'
-import { WEBPACK_RESOURCE_QUERIES } from '../../../lib/constants'
+import { getLoaderModuleNamedExports } from './utils'
+
+function errorOnBadHandler(resourcePath: string) {
+  return `
+  if (typeof handler !== 'function') {
+    throw new Error('Default export is missing in ${JSON.stringify(
+      resourcePath
+    )}')
+  }
+  `
+}
+
+/* re-export the userland route configs */
+async function createReExportsCode(
+  resourcePath: string,
+  loaderContext: webpack.LoaderContext<any>
+) {
+  const exportNames = await getLoaderModuleNamedExports(
+    resourcePath,
+    loaderContext
+  )
+  // Re-export configs but avoid conflicted exports
+  const reExportNames = exportNames.filter(
+    (name) => name !== 'default' && name !== 'generateSitemaps'
+  )
+
+  return reExportNames.length > 0
+    ? `export { ${reExportNames.join(', ')} } from ${JSON.stringify(
+        resourcePath
+      )}\n`
+    : ''
+}
 
 const cacheHeader = {
   none: 'no-cache, no-store',
@@ -11,14 +42,19 @@ const cacheHeader = {
 }
 
 type MetadataRouteLoaderOptions = {
-  page: string
-  pageExtensions: string[]
+  // Using separate argument to avoid json being parsed and hit error
+  // x-ref: https://github.com/vercel/next.js/pull/62615
+  filePath: string
+  isDynamicRouteExtension: '1' | '0'
 }
 
-function getFilenameAndExtension(resourcePath: string) {
+export function getFilenameAndExtension(resourcePath: string) {
   const filename = path.basename(resourcePath)
-  const [name, ext] = filename.split('.')
-  return { name, ext }
+  const [name, ext] = filename.split('.', 2)
+  return {
+    name,
+    ext,
+  }
 }
 
 function getContentType(resourcePath: string) {
@@ -36,26 +72,47 @@ function getContentType(resourcePath: string) {
   return 'text/plain'
 }
 
-// Strip metadata resource query string from `import.meta.url` to make sure the fs.readFileSync get the right path.
-async function getStaticRouteCode(resourcePath: string, fileBaseName: string) {
+async function getStaticAssetRouteCode(
+  resourcePath: string,
+  fileBaseName: string
+) {
+  resourcePath = path.posix.normalize(resourcePath)
+
   const cache =
     fileBaseName === 'favicon'
       ? 'public, max-age=0, must-revalidate'
       : process.env.NODE_ENV !== 'production'
-      ? cacheHeader.none
-      : cacheHeader.longCache
+        ? cacheHeader.none
+        : cacheHeader.longCache
+
+  const isTwitter = fileBaseName === 'twitter-image'
+  const isOpenGraph = fileBaseName === 'opengraph-image'
+  // Twitter image file size limit is 5MB.
+  // General Open Graph image file size limit is 8MB.
+  // x-ref: https://developer.x.com/en/docs/x-for-websites/cards/overview/summary
+  // x-ref(facebook): https://developers.facebook.com/docs/sharing/webmasters/images
+  const fileSizeLimit = isTwitter ? 5 : 8
+  const imgName = isTwitter ? 'Twitter' : 'Open Graph'
+
   const code = `\
+/* static asset route */
 import { NextResponse } from 'next/server'
 
 const contentType = ${JSON.stringify(getContentType(resourcePath))}
 const buffer = Buffer.from(${JSON.stringify(
-    (
-      await fs.promises.readFile(
-        resourcePath.replace('?' + WEBPACK_RESOURCE_QUERIES.metadata, '')
-      )
-    ).toString('base64')
+    (await fs.promises.readFile(resourcePath)).toString('base64')
   )}, 'base64'
   )
+
+if (${isTwitter || isOpenGraph}) {
+  const fileSizeInMB = buffer.byteLength / 1024 / 1024
+  if (fileSizeInMB > ${fileSizeLimit}) {
+    throw new Error('File size for ${imgName} image "${resourcePath}" exceeds ${fileSizeLimit}MB. ' +
+    \`(Current: \${fileSizeInMB.toFixed(2)}MB)\n\` +
+    'Read more: https://nextjs.org/docs/app/api-reference/file-conventions/metadata/opengraph-image#image-files-jpg-png-gif'
+    )
+  }
+}
 
 export function GET() {
   return new NextResponse(buffer, {
@@ -71,14 +128,21 @@ export const dynamic = 'force-static'
   return code
 }
 
-function getDynamicTextRouteCode(resourcePath: string) {
+async function getDynamicTextRouteCode(
+  resourcePath: string,
+  loaderContext: webpack.LoaderContext<any>
+) {
   return `\
+/* dynamic asset route */
 import { NextResponse } from 'next/server'
 import handler from ${JSON.stringify(resourcePath)}
 import { resolveRouteData } from 'next/dist/build/webpack/loaders/metadata/resolve-route-data'
 
 const contentType = ${JSON.stringify(getContentType(resourcePath))}
 const fileType = ${JSON.stringify(getFilenameAndExtension(resourcePath).name)}
+
+${errorOnBadHandler(resourcePath)}
+${await createReExportsCode(resourcePath, loaderContext)}
 
 export async function GET() {
   const data = await handler()
@@ -95,27 +159,36 @@ export async function GET() {
 }
 
 // <metadata-image>/[id]/route.js
-function getDynamicImageRouteCode(resourcePath: string) {
+async function getDynamicImageRouteCode(
+  resourcePath: string,
+  loaderContext: webpack.LoaderContext<any>
+) {
   return `\
+/* dynamic image route */
 import { NextResponse } from 'next/server'
-import * as _imageModule from ${JSON.stringify(resourcePath)}
+import * as userland from ${JSON.stringify(resourcePath)}
 
-const imageModule = { ..._imageModule }
+const imageModule = { ...userland }
 
 const handler = imageModule.default
 const generateImageMetadata = imageModule.generateImageMetadata
 
-export async function GET(_, ctx) {
-  const { __metadata_id__ = [], ...params } = ctx.params || {}
-  const targetId = __metadata_id__[0]
-  let id = undefined
-  const imageMetadata = generateImageMetadata ? await generateImageMetadata({ params }) : null
+${errorOnBadHandler(resourcePath)}
+${await createReExportsCode(resourcePath, loaderContext)}
 
-  if (imageMetadata) {
+export async function GET(_, ctx) {
+  const params = await ctx.params
+  const { __metadata_id__, ...rest } = params || {}
+  const restParams = params ? rest : undefined
+  const targetId = __metadata_id__
+  let id = undefined
+  
+  if (generateImageMetadata) {
+    const imageMetadata = await generateImageMetadata({ params: restParams })
     id = imageMetadata.find((item) => {
       if (process.env.NODE_ENV !== 'production') {
         if (item?.id == null) {
-          throw new Error('id is required for every item returned from generateImageMetadata')
+          throw new Error('id property is required for every item returned from generateImageMetadata')
         }
       }
       return item.id.toString() === targetId
@@ -126,65 +199,75 @@ export async function GET(_, ctx) {
       })
     }
   }
-  return handler({ params: ctx.params ? params : undefined, id })
+
+  return handler({ params: restParams, id })
 }
 `
 }
 
-function getDynamicSiteMapRouteCode(resourcePath: string, page: string) {
+async function getDynamicSitemapRouteCode(
+  resourcePath: string,
+  loaderContext: webpack.LoaderContext<any>
+) {
   let staticGenerationCode = ''
 
-  if (
-    process.env.NODE_ENV === 'production' &&
-    page.includes('[__metadata_id__]')
-  ) {
-    staticGenerationCode = `\
-export async function generateStaticParams() {
-  const sitemaps = await generateSitemaps()
-  const params = []
+  const exportNames = await getLoaderModuleNamedExports(
+    resourcePath,
+    loaderContext
+  )
 
-  for (const item of sitemaps) {
-    params.push({ __metadata_id__: item.id.toString() + '.xml' })
-  }
-  return params
-}
+  const hasGenerateSitemaps = exportNames.includes('generateSitemaps')
+
+  if (process.env.NODE_ENV === 'production' && hasGenerateSitemaps) {
+    staticGenerationCode = `\
+    /* dynamic sitemap route */
+    export async function generateStaticParams() {
+      const sitemaps = await sitemapModule.generateSitemaps()
+      const params = []
+
+      for (const item of sitemaps) {
+        params.push({ __metadata_id__: item.id.toString() + '.xml' })
+      }
+      return params
+    }
     `
   }
 
   const code = `\
 import { NextResponse } from 'next/server'
-import * as _sitemapModule from ${JSON.stringify(resourcePath)}
+import * as userland from ${JSON.stringify(resourcePath)}
 import { resolveRouteData } from 'next/dist/build/webpack/loaders/metadata/resolve-route-data'
 
-const sitemapModule = { ..._sitemapModule }
+const sitemapModule = { ...userland }
 const handler = sitemapModule.default
-const generateSitemaps = sitemapModule.generateSitemaps
 const contentType = ${JSON.stringify(getContentType(resourcePath))}
 const fileType = ${JSON.stringify(getFilenameAndExtension(resourcePath).name)}
 
-export async function GET(_, ctx) {
-  const { __metadata_id__ = [], ...params } = ctx.params || {}
-  const targetId = __metadata_id__[0]
-  let id = undefined
-  const sitemaps = generateSitemaps ? await generateSitemaps() : null
+${errorOnBadHandler(resourcePath)}
+${await createReExportsCode(resourcePath, loaderContext)}
 
-  if (sitemaps) {
-    id = sitemaps.find((item) => {
-      if (process.env.NODE_ENV !== 'production') {
-        if (item?.id == null) {
-          throw new Error('id property is required for every item returned from generateSitemaps')
-        }
+export async function GET(_, ctx) {
+  const { __metadata_id__: id, ...params } = await ctx.params || {}
+  const hasXmlExtension = id ? id.endsWith('.xml') : false
+
+  if (id && !hasXmlExtension) {
+    return new NextResponse('Not Found', {
+      status: 404,
+    })
+  }
+
+  if (process.env.NODE_ENV !== 'production' && sitemapModule.generateSitemaps) {
+    const sitemaps = await sitemapModule.generateSitemaps()
+    for (const item of sitemaps) {
+      if (item?.id == null) {
+        throw new Error('id property is required for every item returned from generateSitemaps')
       }
-      return item.id.toString() === targetId
-    })?.id
-    if (id == null) {
-      return new NextResponse('Not Found', {
-        status: 404,
-      })
     }
   }
 
-  const data = await handler({ id })
+  const targetId = id && hasXmlExtension ? id.slice(0, -4) : undefined
+
+  const data = await handler({ id: targetId })
   const content = resolveRouteData(data, fileType)
 
   return new NextResponse(content, {
@@ -199,28 +282,26 @@ ${staticGenerationCode}
 `
   return code
 }
-// `import.meta.url` is the resource name of the current module.
+
 // When it's static route, it could be favicon.ico, sitemap.xml, robots.txt etc.
 // TODO-METADATA: improve the cache control strategy
 const nextMetadataRouterLoader: webpack.LoaderDefinitionFunction<MetadataRouteLoaderOptions> =
   async function () {
-    const { resourcePath } = this
-    const { pageExtensions, page } = this.getOptions()
-
-    const { name: fileBaseName, ext } = getFilenameAndExtension(resourcePath)
-    const isDynamic = pageExtensions.includes(ext)
+    const { isDynamicRouteExtension, filePath } = this.getOptions()
+    const { name: fileBaseName } = getFilenameAndExtension(filePath)
+    this.addDependency(filePath)
 
     let code = ''
-    if (isDynamic) {
+    if (isDynamicRouteExtension === '1') {
       if (fileBaseName === 'robots' || fileBaseName === 'manifest') {
-        code = getDynamicTextRouteCode(resourcePath)
+        code = await getDynamicTextRouteCode(filePath, this)
       } else if (fileBaseName === 'sitemap') {
-        code = getDynamicSiteMapRouteCode(resourcePath, page)
+        code = await getDynamicSitemapRouteCode(filePath, this)
       } else {
-        code = getDynamicImageRouteCode(resourcePath)
+        code = await getDynamicImageRouteCode(filePath, this)
       }
     } else {
-      code = await getStaticRouteCode(resourcePath, fileBaseName)
+      code = await getStaticAssetRouteCode(filePath, fileBaseName)
     }
 
     return code

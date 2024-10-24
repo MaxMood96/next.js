@@ -4,9 +4,10 @@ import JSON5 from 'next/dist/compiled/json5'
 import { createConfigItem, loadOptions } from 'next/dist/compiled/babel/core'
 import loadConfig from 'next/dist/compiled/babel/core-lib-config'
 
-import { NextBabelLoaderOptions, NextJsLoaderContext } from './types'
+import type { NextBabelLoaderOptions, NextJsLoaderContext } from './types'
 import { consumeIterator } from './util'
 import * as Log from '../../output/log'
+import jsx from 'next/dist/compiled/babel/plugin-syntax-jsx'
 
 const nextDistPath =
   /(next[\\/]dist[\\/]shared[\\/]lib)|(next[\\/]dist[\\/]client)|(next[\\/]dist[\\/]pages)/
@@ -70,7 +71,11 @@ function getPlugins(
   const { isServer, isPageFile, isNextDist, hasModuleExports } =
     cacheCharacteristics
 
-  const { hasReactRefresh, development } = loaderOptions
+  const { development } = loaderOptions
+  const hasReactRefresh =
+    loaderOptions.transformMode !== 'standalone'
+      ? loaderOptions.hasReactRefresh
+      : false
 
   const applyCommonJsItem = hasModuleExports
     ? createConfigItem(require('../plugins/commonjs'), { type: 'plugin' })
@@ -159,6 +164,95 @@ function getCustomBabelConfig(configFilePath: string) {
   )
 }
 
+let babelConfigWarned = false
+/**
+ * Check if custom babel configuration from user only contains options that
+ * can be migrated into latest Next.js features supported by SWC.
+ *
+ * This raises soft warning messages only, not making any errors yet.
+ */
+function checkCustomBabelConfigDeprecation(
+  config: Record<string, any> | undefined
+) {
+  if (!config || Object.keys(config).length === 0) {
+    return
+  }
+
+  const { plugins, presets, ...otherOptions } = config
+  if (Object.keys(otherOptions ?? {}).length > 0) {
+    return
+  }
+
+  if (babelConfigWarned) {
+    return
+  }
+
+  babelConfigWarned = true
+
+  const isPresetReadyToDeprecate =
+    !presets ||
+    presets.length === 0 ||
+    (presets.length === 1 && presets[0] === 'next/babel')
+  const pluginReasons = []
+  const unsupportedPlugins = []
+
+  if (Array.isArray(plugins)) {
+    for (const plugin of plugins) {
+      const pluginName = Array.isArray(plugin) ? plugin[0] : plugin
+
+      // [NOTE]: We cannot detect if the user uses babel-plugin-macro based transform plugins,
+      // such as `styled-components/macro` in here.
+      switch (pluginName) {
+        case 'styled-components':
+        case 'babel-plugin-styled-components':
+          pluginReasons.push(
+            `\t- 'styled-components' can be enabled via 'compiler.styledComponents' in 'next.config.js'`
+          )
+          break
+        case '@emotion/babel-plugin':
+          pluginReasons.push(
+            `\t- '@emotion/babel-plugin' can be enabled via 'compiler.emotion' in 'next.config.js'`
+          )
+          break
+        case 'babel-plugin-relay':
+          pluginReasons.push(
+            `\t- 'babel-plugin-relay' can be enabled via 'compiler.relay' in 'next.config.js'`
+          )
+          break
+        case 'react-remove-properties':
+          pluginReasons.push(
+            `\t- 'react-remove-properties' can be enabled via 'compiler.reactRemoveProperties' in 'next.config.js'`
+          )
+          break
+        case 'transform-remove-console':
+          pluginReasons.push(
+            `\t- 'transform-remove-console' can be enabled via 'compiler.removeConsole' in 'next.config.js'`
+          )
+          break
+        default:
+          unsupportedPlugins.push(pluginName)
+          break
+      }
+    }
+  }
+
+  if (isPresetReadyToDeprecate && unsupportedPlugins.length === 0) {
+    Log.warn(
+      `It looks like there is a custom Babel configuration that can be removed${
+        pluginReasons.length > 0 ? ':' : '.'
+      }`
+    )
+
+    if (pluginReasons.length > 0) {
+      Log.warn(`Next.js supports the following features natively: `)
+      Log.warn(pluginReasons.join(''))
+      Log.warn(
+        `For more details configuration options, please refer https://nextjs.org/docs/architecture/nextjs-compiler#supported-features`
+      )
+    }
+  }
+}
+
 /**
  * Generate a new, flat Babel config, ready to be handed to Babel-traverse.
  * This config should have no unresolved overrides, presets, etc.
@@ -171,12 +265,29 @@ function getFreshConfig(
   filename: string,
   inputSourceMap?: object | null
 ) {
-  let { isServer, pagesDir, development, hasJsxRuntime, configFile } =
-    loaderOptions
+  const hasReactCompiler = (() => {
+    if (
+      loaderOptions.reactCompilerPlugins &&
+      loaderOptions.reactCompilerPlugins.length === 0
+    ) {
+      return false
+    }
 
-  let customConfig: any = configFile
-    ? getCustomBabelConfig(configFile)
-    : undefined
+    if (
+      loaderOptions.reactCompilerExclude &&
+      loaderOptions.reactCompilerExclude(filename)
+    ) {
+      return false
+    }
+
+    return true
+  })()
+
+  const reactCompilerPluginsIfEnabled = hasReactCompiler
+    ? loaderOptions.reactCompilerPlugins ?? []
+    : []
+
+  let { isServer, pagesDir, srcDir, development } = loaderOptions
 
   let options = {
     babelrc: false,
@@ -184,29 +295,72 @@ function getFreshConfig(
     filename,
     inputSourceMap: inputSourceMap || undefined,
 
-    // Set the default sourcemap behavior based on Webpack's mapping flag,
-    // but allow users to override if they want.
-    sourceMaps:
-      loaderOptions.sourceMaps === undefined
-        ? this.sourceMap
-        : loaderOptions.sourceMaps,
-
     // Ensure that Webpack will get a full absolute path in the sourcemap
     // so that it can properly map the module back to its internal cached
     // modules.
     sourceFileName: filename,
+    sourceMaps: this.sourceMap,
+  } as any
 
-    plugins: [
+  const baseCaller = {
+    name: 'next-babel-turbo-loader',
+    supportsStaticESM: true,
+    supportsDynamicImport: true,
+
+    // Provide plugins with insight into webpack target.
+    // https://github.com/babel/babel-loader/issues/787
+    target: target,
+
+    // Webpack 5 supports TLA behind a flag. We enable it by default
+    // for Babel, and then webpack will throw an error if the experimental
+    // flag isn't enabled.
+    supportsTopLevelAwait: true,
+
+    isServer,
+    srcDir,
+    pagesDir,
+    isDev: development,
+
+    ...loaderOptions.caller,
+  }
+
+  if (loaderOptions.transformMode === 'standalone') {
+    options.plugins = [jsx, ...reactCompilerPluginsIfEnabled]
+    options.presets = [
+      [
+        require('next/dist/compiled/babel/preset-typescript'),
+        { allowNamespaces: true },
+      ],
+    ]
+    options.caller = baseCaller
+  } else {
+    let { configFile, hasJsxRuntime } = loaderOptions
+    let customConfig: any = configFile
+      ? getCustomBabelConfig(configFile)
+      : undefined
+
+    checkCustomBabelConfigDeprecation(customConfig)
+
+    // Set the default sourcemap behavior based on Webpack's mapping flag,
+    // but allow users to override if they want.
+    options.sourceMaps =
+      loaderOptions.sourceMaps === undefined
+        ? this.sourceMap
+        : loaderOptions.sourceMaps
+
+    options.plugins = [
       ...getPlugins(loaderOptions, cacheCharacteristics),
+      ...reactCompilerPluginsIfEnabled,
       ...(customConfig?.plugins || []),
-    ],
+    ]
 
     // target can be provided in babelrc
-    target: isServer ? undefined : customConfig?.target,
-    // env can be provided in babelrc
-    env: customConfig?.env,
+    options.target = isServer ? undefined : customConfig?.target
 
-    presets: (() => {
+    // env can be provided in babelrc
+    options.env = customConfig?.env
+
+    options.presets = (() => {
       // If presets is defined the user will have next/babel in their babelrc
       if (customConfig?.presets) {
         return customConfig.presets
@@ -219,32 +373,15 @@ function getFreshConfig(
 
       // If no custom config is provided the default is to use next/babel
       return ['next/babel']
-    })(),
+    })()
 
-    overrides: loaderOptions.overrides,
+    options.overrides = loaderOptions.overrides
 
-    caller: {
-      name: 'next-babel-turbo-loader',
-      supportsStaticESM: true,
-      supportsDynamicImport: true,
-
-      // Provide plugins with insight into webpack target.
-      // https://github.com/babel/babel-loader/issues/787
-      target: target,
-
-      // Webpack 5 supports TLA behind a flag. We enable it by default
-      // for Babel, and then webpack will throw an error if the experimental
-      // flag isn't enabled.
-      supportsTopLevelAwait: true,
-
-      isServer,
-      pagesDir,
-      isDev: development,
+    options.caller = {
+      ...baseCaller,
       hasJsxRuntime,
-
-      ...loaderOptions.caller,
-    },
-  } as any
+    }
+  }
 
   // Babel does strict checks on the config so undefined is not allowed
   if (typeof options.target === 'undefined') {
@@ -313,7 +450,7 @@ export default function getConfig(
     filename
   )
 
-  if (loaderOptions.configFile) {
+  if (loaderOptions.transformMode === 'default' && loaderOptions.configFile) {
     // Ensures webpack invalidates the cache for this loader when the config file changes
     this.addDependency(loaderOptions.configFile)
   }
@@ -334,7 +471,11 @@ export default function getConfig(
     }
   }
 
-  if (loaderOptions.configFile && !configFiles.has(loaderOptions.configFile)) {
+  if (
+    loaderOptions.transformMode === 'default' &&
+    loaderOptions.configFile &&
+    !configFiles.has(loaderOptions.configFile)
+  ) {
     configFiles.add(loaderOptions.configFile)
     Log.info(
       `Using external babel configuration from ${loaderOptions.configFile}`

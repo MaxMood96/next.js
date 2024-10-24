@@ -1,27 +1,38 @@
 import type { NextConfigComplete } from '../config-shared'
-import type { AppRouteUserlandModule } from '../future/route-modules/app-route/module'
 
 import '../require-hook'
-import '../node-polyfill-fetch'
 import '../node-environment'
+
 import {
   buildAppStaticPaths,
   buildStaticPaths,
-  collectGenerateParams,
-  GenerateParams,
+  reduceAppConfig,
 } from '../../build/utils'
+import { collectSegments } from '../../build/segment-config/app/app-segments'
+import type { PartialStaticPathsResult } from '../../build/utils'
 import { loadComponents } from '../load-components'
-import { setHttpClientAndAgentOptions } from '../config'
-import { IncrementalCache } from '../lib/incremental-cache'
-import * as serverHooks from '../../client/components/hooks-server-context'
-import { staticGenerationAsyncStorage } from '../../client/components/static-generation-async-storage'
+import { setHttpClientAndAgentOptions } from '../setup-http-agent-env'
+import type { IncrementalCache } from '../lib/incremental-cache'
+import { isAppPageRouteModule } from '../route-modules/checks'
+import {
+  checkIsRoutePPREnabled,
+  type ExperimentalPPRConfig,
+} from '../lib/experimental/ppr'
+import { InvariantError } from '../../shared/lib/invariant-error'
 
-type RuntimeConfig = any
+type RuntimeConfig = {
+  pprConfig: ExperimentalPPRConfig | undefined
+  configFileName: string
+  publicRuntimeConfig: { [key: string]: any }
+  serverRuntimeConfig: { [key: string]: any }
+  dynamicIO: boolean
+}
 
 // we call getStaticPaths in a separate process to ensure
 // side-effects aren't relied on in dev that will break
 // during a production build
 export async function loadStaticPaths({
+  dir,
   distDir,
   pathname,
   config,
@@ -29,85 +40,83 @@ export async function loadStaticPaths({
   locales,
   defaultLocale,
   isAppPath,
-  originalAppPath,
+  page,
   isrFlushToDisk,
   fetchCacheKeyPrefix,
   maxMemoryCacheSize,
   requestHeaders,
-  incrementalCacheHandlerPath,
+  cacheHandler,
+  cacheLifeProfiles,
+  nextConfigOutput,
+  buildId,
 }: {
+  dir: string
   distDir: string
   pathname: string
   config: RuntimeConfig
   httpAgentOptions: NextConfigComplete['httpAgentOptions']
   locales?: string[]
   defaultLocale?: string
-  isAppPath?: boolean
-  originalAppPath?: string
+  isAppPath: boolean
+  page: string
   isrFlushToDisk?: boolean
   fetchCacheKeyPrefix?: string
   maxMemoryCacheSize?: number
   requestHeaders: IncrementalCache['requestHeaders']
-  incrementalCacheHandlerPath?: string
-}): Promise<{
-  paths?: string[]
-  encodedPaths?: string[]
-  fallback?: boolean | 'blocking'
-}> {
+  cacheHandler?: string
+  cacheLifeProfiles?: {
+    [profile: string]: import('../../server/use-cache/cache-life').CacheLife
+  }
+  nextConfigOutput: 'standalone' | 'export' | undefined
+  buildId: string
+}): Promise<PartialStaticPathsResult> {
   // update work memory runtime-config
-  require('../../shared/lib/runtime-config').setConfig(config)
+  require('../../shared/lib/runtime-config.external').setConfig(config)
   setHttpClientAndAgentOptions({
     httpAgentOptions,
   })
 
   const components = await loadComponents({
     distDir,
-    pathname: originalAppPath || pathname,
-    hasServerComponents: false,
-    isAppPath: !!isAppPath,
+    // In `pages/`, the page is the same as the pathname.
+    page: page || pathname,
+    isAppPath,
   })
 
-  if (!components.getStaticPaths && !isAppPath) {
-    // we shouldn't get to this point since the worker should
-    // only be called for SSG pages with getStaticPaths
-    throw new Error(
-      `Invariant: failed to load page with getStaticPaths for ${pathname}`
-    )
-  }
-
   if (isAppPath) {
-    const userland: AppRouteUserlandModule | undefined =
-      components.ComponentMod.routeModule?.userland
-    const generateParams: GenerateParams = userland
-      ? [
-          {
-            config: {
-              revalidate: userland.revalidate,
-              dynamic: userland.dynamic,
-              dynamicParams: userland.dynamicParams,
-            },
-            generateStaticParams: userland.generateStaticParams,
-            segmentPath: pathname,
-          },
-        ]
-      : await collectGenerateParams(components.ComponentMod.tree)
+    const segments = await collectSegments(components)
 
-    return await buildAppStaticPaths({
+    const isRoutePPREnabled =
+      isAppPageRouteModule(components.routeModule) &&
+      checkIsRoutePPREnabled(config.pprConfig, reduceAppConfig(segments))
+
+    return buildAppStaticPaths({
+      dir,
       page: pathname,
-      generateParams,
+      dynamicIO: config.dynamicIO,
+      segments,
       configFileName: config.configFileName,
       distDir,
       requestHeaders,
-      incrementalCacheHandlerPath,
-      serverHooks,
-      staticGenerationAsyncStorage,
+      cacheHandler,
+      cacheLifeProfiles,
       isrFlushToDisk,
       fetchCacheKeyPrefix,
       maxMemoryCacheSize,
+      ComponentMod: components.ComponentMod,
+      nextConfigOutput,
+      isRoutePPREnabled,
+      buildId,
     })
+  } else if (!components.getStaticPaths) {
+    // We shouldn't get to this point since the worker should only be called for
+    // SSG pages with getStaticPaths.
+    throw new InvariantError(
+      `Failed to load page with getStaticPaths for ${pathname}`
+    )
   }
 
-  return await buildStaticPaths({
+  return buildStaticPaths({
     page: pathname,
     getStaticPaths: components.getStaticPaths,
     configFileName: config.configFileName,

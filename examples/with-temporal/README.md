@@ -28,7 +28,7 @@ Charging user 123 for 2 of item B102
 Here is the Temporal code:
 
 - The Workflow: `temporal/src/workflows/order.ts`
-- The Activites: `temporal/src/activities/{payment|inventory}.ts`
+- The Activities: `temporal/src/activities/{payment|inventory}.ts`
 
 There are three parts of this starter project that are left unimplemented:
 
@@ -69,7 +69,7 @@ The Temporal Node SDK requires [Node `>= 14`, `node-gyp`, and Temporal Server](h
 In the Temporal Server docker directory:
 
 ```bash
-docker-compose up
+docker compose up
 ```
 
 In the `next-temporal-app/` directory:
